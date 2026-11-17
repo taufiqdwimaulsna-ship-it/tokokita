@@ -5,12 +5,17 @@ batasiAksesPelanggan();
 $notif = "";
 
 if (isset($_POST['tambah'])) {
-    $id_kat = (int)$_POST['id_kategori'];
-    $nama   = mysqli_real_escape_string($conn, trim($_POST['nama_produk']));
-    $harga  = (float)$_POST['harga'];
-    $stok   = (int)$_POST['stok'];
-    mysqli_query($conn, "INSERT INTO tbl_produk (id_kategori, nama_produk, harga, stok) VALUES ($id_kat, '$nama', $harga, $stok)");
-    $notif = "Produk '$nama' berhasil ditambahkan ke katalog inventori!";
+    $id_kat  = (int)$_POST['id_kategori'];
+    $nama    = mysqli_real_escape_string($conn, trim($_POST['nama_produk']));
+    $harga   = (float)$_POST['harga'];
+    $stok    = (int)$_POST['stok'];
+    $barcode = isset($_POST['barcode']) ? mysqli_real_escape_string($conn, trim($_POST['barcode'])) : '';
+    if (empty($barcode)) {
+        // Otomatis generate kode barcode 899xxxx
+        $barcode = '899' . str_pad(rand(10000000, 99999999), 8, '0', STR_PAD_LEFT);
+    }
+    mysqli_query($conn, "INSERT INTO tbl_produk (id_kategori, nama_produk, harga, stok, barcode) VALUES ($id_kat, '$nama', $harga, $stok, '$barcode')");
+    $notif = "Produk '$nama' (Barcode: $barcode) berhasil ditambahkan ke katalog inventori!";
 }
 
 if (isset($_POST['update'])) {
@@ -45,6 +50,31 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
     <title>Manajemen Produk - TokoKita</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Library Barcode Scanner -->
+    <script src="js/html5-qrcode.min.js"></script>
+    <script>
+        if (typeof Html5Qrcode === 'undefined') {
+            document.write('<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"><\/script>');
+        }
+    </script>
+    <style>
+        @keyframes scanLaser {
+            0% { top: 4%; opacity: 0.8; }
+            50% { top: 92%; opacity: 1; }
+            100% { top: 4%; opacity: 0.8; }
+        }
+        .scanning-laser {
+            position: absolute;
+            left: 4%;
+            width: 92%;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #ef4444, #f43f5e, #ef4444, transparent);
+            box-shadow: 0 0 14px 4px rgba(239, 68, 68, 0.85);
+            animation: scanLaser 2s infinite ease-in-out;
+            z-index: 20;
+            pointer-events: none;
+        }
+    </style>
 </head>
 <body class="bg-slate-50 text-slate-800 font-sans min-h-screen">
     <?php include 'navbar.php'; ?>
@@ -74,7 +104,7 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                 </div>
             </div>
 
-            <form method="POST" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+            <form method="POST" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3">
                 <div>
                     <label class="block text-[11px] font-bold text-slate-500 mb-1">Kategori</label>
                     <select name="id_kategori" required class="w-full border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -84,8 +114,19 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                     </select>
                 </div>
                 <div>
+                    <label class="block text-[11px] font-bold text-slate-500 mb-1">Barcode / SKU</label>
+                    <div class="relative flex">
+                        <input type="text" id="inpBarcodeTambah" name="barcode" placeholder="Scan barcode..." 
+                            class="w-full border border-slate-200 bg-slate-50 pl-3 pr-9 py-2.5 rounded-xl text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <button type="button" onclick="bukaScanAdmin()" title="Buka Kamera Scanner Barcode"
+                            class="absolute right-1 top-1 bottom-1 bg-indigo-600 hover:bg-indigo-700 text-white px-2 rounded-lg flex items-center justify-center text-xs transition">
+                            <i data-lucide="camera" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+                </div>
+                <div>
                     <label class="block text-[11px] font-bold text-slate-500 mb-1">Nama Produk</label>
-                    <input type="text" name="nama_produk" placeholder="Nama barang" required
+                    <input type="text" id="inpNamaTambah" name="nama_produk" placeholder="Nama barang" required
                         class="w-full border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 </div>
                 <div>
@@ -129,6 +170,7 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                     <thead>
                         <tr class="bg-slate-50 text-slate-400 uppercase tracking-wider text-[10px] border-b">
                             <th class="p-3.5">ID</th>
+                            <th class="p-3.5">Barcode / SKU</th>
                             <th class="p-3.5">Nama Produk</th>
                             <th class="p-3.5">Kategori</th>
                             <th class="p-3.5">Update Cepat Harga & Stok</th>
@@ -140,6 +182,11 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                         <?php while ($p = mysqli_fetch_assoc($q_produk)): ?>
                         <tr class="hover:bg-slate-50/70 transition">
                             <td class="p-3.5 font-mono font-bold text-indigo-600">#<?= $p['id_produk'] ?></td>
+                            <td class="p-3.5 font-mono text-[11px] font-bold text-slate-700">
+                                <span class="bg-slate-100 border border-slate-200 px-2 py-0.5 rounded text-[10px]">
+                                    <?= htmlspecialchars($p['barcode'] ?? ('899' . str_pad($p['id_produk'], 8, '0', STR_PAD_LEFT))) ?>
+                                </span>
+                            </td>
                             <td class="p-3.5 font-bold text-slate-800"><?= htmlspecialchars($p['nama_produk']) ?></td>
                             <td class="p-3.5">
                                 <span class="bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded-full text-[10px] font-bold">
@@ -172,9 +219,147 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
 
     </main>
 
+    <!-- MODAL SCANNER BARCODE UNTUK INPUT PRODUK BARU -->
+    <div id="modalScanAdmin" class="fixed inset-0 z-50 hidden bg-slate-950/80 backdrop-blur-sm items-center justify-center p-3 sm:p-4 overflow-y-auto">
+        <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+            <div class="bg-slate-900 text-white px-5 py-4 flex items-center justify-between border-b border-slate-800">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-8 h-8 rounded-xl bg-indigo-600/30 flex items-center justify-center text-indigo-400">
+                        <i data-lucide="scan-barcode" class="w-4 h-4 animate-pulse"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-black text-sm text-white">Scan Barcode Produk Baru</h3>
+                        <p class="text-[11px] text-slate-400">Arahkan kamera ke barcode kemasan barang</p>
+                    </div>
+                </div>
+                <button type="button" onclick="tutupScanAdmin()" class="text-slate-400 hover:text-white">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+            </div>
+            
+            <div class="p-5 space-y-4 text-xs">
+                <div class="relative bg-slate-950 rounded-2xl overflow-hidden aspect-video min-h-[220px] max-h-[260px] flex items-center justify-center">
+                    <div id="readerAdmin" class="w-full h-full flex items-center justify-center"></div>
+                    <div class="scanning-laser"></div>
+                    <div id="phAdmin" class="absolute inset-0 flex flex-col items-center justify-center text-center p-4 bg-slate-900/90 z-10">
+                        <i data-lucide="camera" class="w-10 h-10 text-indigo-400 mb-2"></i>
+                        <p class="font-bold text-white mb-1">Kamera Siap</p>
+                        <button type="button" onclick="startScanAdmin()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-xl mt-2 flex items-center gap-1.5 shadow">
+                            <i data-lucide="play" class="w-3.5 h-3.5"></i> Nyalakan Kamera
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Bantuan jika izin kamera belum aktif -->
+                <div id="errScanAdmin" class="hidden bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-2xl text-[11px]">
+                    <p class="font-bold">⚠️ Kamera Tidak Aktif</p>
+                    <p class="text-slate-600 mt-1">Pastikan browser mengizinkan kamera (klik tanda gembok 🔒 di URL), atau Anda dapat langsung mengetik nomor barcode secara manual atau menembakkan Barcode Gun.</p>
+                </div>
+
+                <div class="space-y-2">
+                    <label class="block font-bold text-slate-700">Atau Pilih Foto / Gambar Barcode:</label>
+                    <input type="file" id="fileBarcodeAdmin" accept="image/*" onchange="scanAdminDariFile(this.files)" class="w-full border border-slate-200 bg-slate-50 p-2 rounded-xl text-xs">
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="script.js"></script>
     <script>
         lucide.createIcons();
+
+        let qrAdmin = null;
+        let isCamAdminRunning = false;
+
+        function bukaScanAdmin() {
+            const m = document.getElementById('modalScanAdmin');
+            m.classList.remove('hidden');
+            m.classList.add('flex');
+            startScanAdmin();
+        }
+
+        function tutupScanAdmin() {
+            stopScanAdmin();
+            const m = document.getElementById('modalScanAdmin');
+            m.classList.add('hidden');
+            m.classList.remove('flex');
+        }
+
+        function startScanAdmin() {
+            if (typeof Html5Qrcode === 'undefined') return;
+            const ph = document.getElementById('phAdmin');
+            const errBox = document.getElementById('errScanAdmin');
+            if (errBox) errBox.classList.add('hidden');
+
+            if (!qrAdmin) qrAdmin = new Html5Qrcode("readerAdmin");
+
+            Html5Qrcode.getCameras().then(devices => {
+                let targetId = (devices && devices.length > 0) ? devices[0].id : { video: true };
+                qrAdmin.start(
+                    targetId,
+                    { fps: 15, qrbox: { width: 220, height: 160 } },
+                    (code) => {
+                        selesaiScanAdmin(code);
+                    },
+                    () => {}
+                ).then(() => {
+                    isCamAdminRunning = true;
+                    if (ph) ph.classList.add('hidden');
+                }).catch(() => {
+                    qrAdmin.start({ video: true }, { fps: 15, qrbox: { width: 220, height: 160 } }, (code) => {
+                        selesaiScanAdmin(code);
+                    }, () => {}).then(() => {
+                        isCamAdminRunning = true;
+                        if (ph) ph.classList.add('hidden');
+                    }).catch(err => {
+                        if (ph) ph.classList.remove('hidden');
+                        if (errBox) errBox.classList.remove('hidden');
+                    });
+                });
+            }).catch(err => {
+                qrAdmin.start({ video: true }, { fps: 15, qrbox: { width: 220, height: 160 } }, (code) => {
+                    selesaiScanAdmin(code);
+                }, () => {}).then(() => {
+                    isCamAdminRunning = true;
+                    if (ph) ph.classList.add('hidden');
+                }).catch(err2 => {
+                    if (ph) ph.classList.remove('hidden');
+                    if (errBox) errBox.classList.remove('hidden');
+                });
+            });
+        }
+
+        function stopScanAdmin() {
+            if (qrAdmin && isCamAdminRunning) {
+                qrAdmin.stop().then(() => {
+                    isCamAdminRunning = false;
+                    const ph = document.getElementById('phAdmin');
+                    if (ph) ph.classList.remove('hidden');
+                }).catch(e => console.error(e));
+            }
+        }
+
+        function scanAdminDariFile(files) {
+            if (!files || files.length === 0) return;
+            if (!qrAdmin) qrAdmin = new Html5Qrcode("readerAdmin");
+            qrAdmin.scanFile(files[0], true).then(code => {
+                selesaiScanAdmin(code);
+            }).catch(err => {
+                alert("Barcode tidak terdeteksi pada gambar. Pastikan gambar jelas.");
+            });
+        }
+
+        function selesaiScanAdmin(code) {
+            playScannerBeep();
+            const inp = document.getElementById('inpBarcodeTambah');
+            if (inp) {
+                inp.value = code;
+                const inpNama = document.getElementById('inpNamaTambah');
+                if (inpNama) inpNama.focus();
+            }
+            tutupScanAdmin();
+            tampilkanToast("✅ Barcode terdeteksi: " + code, "success");
+        }
     </script>
 </body>
 </html>

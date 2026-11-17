@@ -46,8 +46,13 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
     <title>Kasir Point of Sale (POS) - TokoKita</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    <!-- Library Barcode & QR Code Scanner HTML5 -->
-    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <!-- Library Barcode & QR Code Scanner HTML5 (Lokal & CDN Fallback) -->
+    <script src="js/html5-qrcode.min.js"></script>
+    <script>
+        if (typeof Html5Qrcode === 'undefined') {
+            document.write('<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"><\/script>');
+        }
+    </script>
     <style>
         @keyframes scanLaser {
             0% { top: 4%; opacity: 0.8; }
@@ -106,6 +111,83 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
             </div>
         <?php endif; ?>
 
+        <!-- ==================================================== -->
+        <!-- HERO PANEL: SCANNER BARCODE PRODUK UNTUK KASIR POS   -->
+        <!-- ==================================================== -->
+        <div class="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 md:p-6 rounded-3xl shadow-xl border border-indigo-900/60 relative overflow-hidden">
+            <div class="absolute -right-10 -bottom-10 w-44 h-44 bg-indigo-500/10 rounded-full blur-2xl pointer-events-none"></div>
+            
+            <div class="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div class="space-y-1">
+                    <div class="inline-flex items-center gap-2 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-3 py-1 rounded-full text-[11px] font-extrabold uppercase tracking-wide">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                        <i data-lucide="scan-barcode" class="w-3.5 h-3.5"></i> Scanner Barcode Produk Siap
+                    </div>
+                    <h2 class="text-lg md:text-xl font-black text-white flex items-center gap-2">
+                        Scan Barcode untuk Memasukkan / Menambahkan Produk
+                    </h2>
+                    <p class="text-xs text-slate-300 max-w-xl">
+                        Tembak barcode produk dengan Barcode Scanner Gun USB atau Kamera HP/Webcam. Produk otomatis dicari dan ditambahkan ke form kasir dengan bunyi beep!
+                    </p>
+                </div>
+
+                <!-- Tombol Kamera Scanner -->
+                <div class="flex items-center gap-2 shrink-0">
+                    <button type="button" onclick="bukaModalKameraProduk()" 
+                        class="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-extrabold px-4 py-2.5 rounded-2xl text-xs shadow-lg shadow-emerald-500/30 flex items-center gap-2 transition active:scale-95">
+                        <i data-lucide="camera" class="w-4 h-4"></i> Buka Kamera Scanner
+                    </button>
+                </div>
+            </div>
+
+            <!-- Input Barcode Gun & Quick Demo Chips -->
+            <div class="mt-4 pt-4 border-t border-slate-800/80 grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+                
+                <!-- Input Tembak Barcode Gun USB -->
+                <div class="md:col-span-5 relative">
+                    <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-indigo-400">
+                        <i data-lucide="barcode" class="w-5 h-5"></i>
+                    </div>
+                    <input type="text" id="inputBarcodeProduk" autofocus autocomplete="off"
+                        placeholder="Scan / Ketik Barcode di sini (tekan Enter)..."
+                        class="w-full bg-slate-800/90 border-2 border-indigo-500/60 focus:border-indigo-400 pl-11 pr-24 py-2.5 rounded-2xl text-xs font-mono font-bold text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 shadow-inner transition">
+                    <button type="button" onclick="submitManualBarcodeProduk()"
+                        class="absolute right-1.5 top-1.5 bottom-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold px-3 rounded-xl transition flex items-center gap-1">
+                        <span>+ Masuk</span>
+                    </button>
+                </div>
+
+                <!-- Quick Test Barcode Demo Chips -->
+                <div class="md:col-span-7 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span class="text-slate-400 text-[10px] font-bold mr-1">⚡ Demo Barcode:</span>
+                    <button type="button" onclick="scanBarcodeDanTambah('89900000001')" class="bg-slate-800/80 hover:bg-indigo-600 hover:text-white text-slate-200 border border-slate-700 px-2.5 py-1 rounded-xl font-bold transition flex items-center gap-1">
+                        🌾 Beras (89900000001)
+                    </button>
+                    <button type="button" onclick="scanBarcodeDanTambah('89900000002')" class="bg-slate-800/80 hover:bg-indigo-600 hover:text-white text-slate-200 border border-slate-700 px-2.5 py-1 rounded-xl font-bold transition flex items-center gap-1">
+                        🌻 Minyak (89900000002)
+                    </button>
+                    <button type="button" onclick="scanBarcodeDanTambah('89900000003')" class="bg-slate-800/80 hover:bg-indigo-600 hover:text-white text-slate-200 border border-slate-700 px-2.5 py-1 rounded-xl font-bold transition flex items-center gap-1">
+                        ☕ Kopi (89900000003)
+                    </button>
+                    <button type="button" onclick="scanBarcodeDanTambah('89900000004')" class="bg-slate-800/80 hover:bg-indigo-600 hover:text-white text-slate-200 border border-slate-700 px-2.5 py-1 rounded-xl font-bold transition flex items-center gap-1">
+                        📓 Buku (89900000004)
+                    </button>
+                    <button type="button" onclick="scanBarcodeDanTambah('89900000005')" class="bg-slate-800/80 hover:bg-indigo-600 hover:text-white text-slate-200 border border-slate-700 px-2.5 py-1 rounded-xl font-bold transition flex items-center gap-1">
+                        💧 AQUAVIVA (89900000005)
+                    </button>
+                </div>
+            </div>
+
+            <!-- Notifikasi Status Hasil Scan Realtime -->
+            <div id="statusScanProduk" class="hidden mt-3 p-2.5 rounded-xl text-xs font-bold flex items-center justify-between border transition">
+                <div class="flex items-center gap-2">
+                    <span id="iconStatusScan"></span>
+                    <span id="pesanStatusScan"></span>
+                </div>
+                <button type="button" onclick="document.getElementById('statusScanProduk').classList.add('hidden')" class="hover:opacity-75">✕</button>
+            </div>
+        </div>
+
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             
             <!-- Katalog Produk POS (8 Kolom) -->
@@ -154,6 +236,10 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
                             <h3 class="font-bold text-xs text-slate-800 group-hover:text-indigo-600 transition line-clamp-2">
                                 <?= htmlspecialchars($p['nama_produk']) ?>
                             </h3>
+                            <div class="mt-1 flex items-center gap-1 font-mono text-[10px] text-slate-500">
+                                <i data-lucide="barcode" class="w-3.5 h-3.5 text-slate-400"></i>
+                                <span><?= htmlspecialchars($p['barcode'] ?? ('899' . str_pad($p['id_produk'], 8, '0', STR_PAD_LEFT))) ?></span>
+                            </div>
                         </div>
 
                         <div class="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
@@ -275,6 +361,175 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
 
     </main>
 
+    <!-- MODAL KAMERA SCANNER BARCODE PRODUK (MULTI-MODE: KAMERA / UPLOAD FOTO / GUN / DEMO) -->
+    <div id="modalKameraProduk" class="fixed inset-0 z-50 hidden bg-slate-950/80 backdrop-blur-sm items-center justify-center p-3 sm:p-4 overflow-y-auto">
+        <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+            <!-- Header Modal -->
+            <div class="bg-slate-900 text-white px-5 py-4 flex items-center justify-between border-b border-slate-800">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-8 h-8 rounded-xl bg-emerald-600/30 flex items-center justify-center text-emerald-400">
+                        <i data-lucide="scan-barcode" class="w-4 h-4 animate-pulse"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-black text-sm text-white">Scanner Barcode Produk Kasir</h3>
+                        <p class="text-[11px] text-slate-400">Scan Barcode untuk Menambahkan Produk ke Transaksi</p>
+                    </div>
+                </div>
+                <button type="button" onclick="tutupModalKameraProduk()" class="text-slate-400 hover:text-white transition">
+                    <i data-lucide="x" class="w-4 h-4"></i>
+                </button>
+            </div>
+            
+            <div class="p-5 space-y-4 text-xs">
+                <!-- Tab Switcher -->
+                <div class="flex items-center bg-slate-100 p-1 rounded-2xl font-bold">
+                    <button type="button" id="tabKamPrd" onclick="pilihTabModalProduk('kam')" class="flex-1 py-1.5 rounded-xl bg-white text-emerald-700 shadow-sm flex items-center justify-center gap-1 transition">
+                        <i data-lucide="camera" class="w-3.5 h-3.5"></i> Kamera
+                    </button>
+                    <button type="button" id="tabFilePrd" onclick="pilihTabModalProduk('file')" class="flex-1 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1 transition">
+                        <i data-lucide="image" class="w-3.5 h-3.5"></i> Foto/File
+                    </button>
+                    <button type="button" id="tabGunPrd" onclick="pilihTabModalProduk('gun')" class="flex-1 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1 transition">
+                        <i data-lucide="barcode" class="w-3.5 h-3.5"></i> Barcode Gun
+                    </button>
+                    <button type="button" id="tabSimPrd" onclick="pilihTabModalProduk('sim')" class="flex-1 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1 transition">
+                        <i data-lucide="sparkles" class="w-3.5 h-3.5 text-amber-500"></i> Demo
+                    </button>
+                </div>
+
+                <!-- TAB 1: KAMERA SCANNER LANGSUNG -->
+                <div id="conKamPrd" class="space-y-3">
+                    <!-- Dropdown Pemilih Kamera Perangkat (Muncul jika ada lebih dari 1 kamera) -->
+                    <div id="wrapKameraSelect" class="hidden flex items-center justify-between gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
+                        <label class="text-[11px] font-bold text-slate-600 flex items-center gap-1 shrink-0">
+                            <i data-lucide="video" class="w-3.5 h-3.5 text-indigo-600"></i> Kamera:
+                        </label>
+                        <select id="selectKameraDeviceProduk" onchange="gantiKameraDevice(this.value)" class="w-full bg-white text-slate-800 text-[11px] border border-slate-200 rounded-lg p-1.5 font-bold focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                        </select>
+                    </div>
+
+                    <!-- Kotak Layar Video Scanner -->
+                    <div class="relative bg-slate-950 rounded-2xl overflow-hidden aspect-video min-h-[220px] max-h-[270px] flex items-center justify-center shadow-inner">
+                        <div id="readerKameraProduk" class="w-full h-full flex items-center justify-center"></div>
+                        <div class="scanning-laser"></div>
+                        
+                        <div id="phKameraProduk" class="absolute inset-0 flex flex-col items-center justify-center text-center p-4 bg-slate-900/90 z-10 transition">
+                            <div class="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mb-2">
+                                <i data-lucide="camera" class="w-6 h-6"></i>
+                            </div>
+                            <p class="font-bold text-white mb-0.5">Kamera Scanner Siap</p>
+                            <p class="text-slate-400 text-[11px] mb-3">Klik tombol untuk menyalakan kamera komputer/laptop</p>
+                            <button type="button" onclick="startKameraProduk()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg shadow-emerald-600/30 transition active:scale-95">
+                                <i data-lucide="play" class="w-3.5 h-3.5"></i> Mulai Kamera
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Kotak Notifikasi / Bantuan jika Kamera Bermasalah -->
+                    <div id="errorKameraProduk" class="hidden bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-2xl space-y-2">
+                        <div class="flex items-start gap-2">
+                            <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-600 shrink-0 mt-0.5"></i>
+                            <div>
+                                <p class="font-bold text-xs" id="errorKameraProdukText">Tidak dapat mengakses kamera.</p>
+                                <p class="text-[11px] text-amber-700 mt-1">
+                                    💡 <strong>Tips Mengatasi:</strong><br>
+                                    1. Pastikan izin kamera diizinkan di browser (klik tanda gembok 🔒 di sebelah address bar <code>localhost</code> → Izinkan Kamera).<br>
+                                    2. Jika laptop tidak memiliki webcam, gunakan tab <strong>Foto/File</strong>, <strong>Barcode Gun</strong>, atau <strong>Demo</strong> di atas.
+                                </p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2 pt-1 border-t border-amber-200">
+                            <button type="button" onclick="startKameraProduk()" class="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1 rounded-lg text-[10.5px] transition">
+                                🔄 Coba Lagi
+                            </button>
+                            <button type="button" onclick="pilihTabModalProduk('file')" class="bg-white border border-amber-300 hover:bg-amber-100 text-amber-800 font-bold px-3 py-1 rounded-lg text-[10.5px] transition">
+                                📁 Gunakan Upload Foto
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 2: UPLOAD FOTO / GAMBAR BARCODE -->
+                <div id="conFilePrd" class="hidden space-y-3">
+                    <div onclick="document.getElementById('fileBarcodeProduk').click()" 
+                         class="border-2 border-dashed border-indigo-300 hover:border-indigo-600 bg-indigo-50/40 hover:bg-indigo-50/80 rounded-2xl p-6 text-center cursor-pointer transition group">
+                        <div class="w-12 h-12 rounded-2xl bg-indigo-600/10 text-indigo-600 flex items-center justify-center mx-auto mb-2 group-hover:scale-110 transition">
+                            <i data-lucide="image-plus" class="w-6 h-6"></i>
+                        </div>
+                        <p class="font-extrabold text-sm text-slate-800">Klik untuk Memilih Foto / Gambar Barcode</p>
+                        <p class="text-[11px] text-slate-400 mt-1">Mendukung file gambar PNG, JPG, JPEG, WEBP. Barcode langsung didekode & dimasukkan ke kasir otomatis!</p>
+                        <input type="file" id="fileBarcodeProduk" accept="image/*" onchange="scanBarcodeDariFile(this.files)" class="hidden">
+                    </div>
+                </div>
+
+                <!-- TAB 3: BARCODE GUN USB / SCANNER FISIK -->
+                <div id="conGunPrd" class="hidden space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                    <div>
+                        <label class="block font-bold text-slate-700 mb-1">Tembak Barcode Scanner Gun USB:</label>
+                        <p class="text-[11px] text-slate-400 mb-2">Arahkan scanner gun fisik ke barcode barang, angka akan otomatis terisi dan tekan Enter.</p>
+                        <div class="relative">
+                            <input type="text" id="inpGunPrd" placeholder="Arahkan barcode gun ke sini..." 
+                                class="w-full border-2 border-emerald-400 p-2.5 rounded-xl font-mono text-sm font-bold bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 4: UJI DEMO 1-KLIK -->
+                <div id="conSimPrd" class="hidden space-y-2">
+                    <p class="font-bold text-slate-600 text-[11px]">Klik salah satu produk demo untuk simulasi scan instan:</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button type="button" onclick="tutupModalKameraProduk(); scanBarcodeDanTambah('89900000001')" 
+                            class="p-2.5 border border-slate-200 hover:border-indigo-500 rounded-xl text-left bg-white shadow-sm hover:shadow transition flex items-center justify-between">
+                            <div>
+                                <p class="font-bold text-slate-800">🌾 Beras Premium 5kg</p>
+                                <p class="text-[10px] font-mono text-slate-400">89900000001</p>
+                            </div>
+                            <span class="text-xs font-black text-emerald-600">Rp 75.000</span>
+                        </button>
+                        <button type="button" onclick="tutupModalKameraProduk(); scanBarcodeDanTambah('89900000002')" 
+                            class="p-2.5 border border-slate-200 hover:border-indigo-500 rounded-xl text-left bg-white shadow-sm hover:shadow transition flex items-center justify-between">
+                            <div>
+                                <p class="font-bold text-slate-800">🌻 Minyak Goreng 2L</p>
+                                <p class="text-[10px] font-mono text-slate-400">89900000002</p>
+                            </div>
+                            <span class="text-xs font-black text-emerald-600">Rp 35.000</span>
+                        </button>
+                        <button type="button" onclick="tutupModalKameraProduk(); scanBarcodeDanTambah('89900000003')" 
+                            class="p-2.5 border border-slate-200 hover:border-indigo-500 rounded-xl text-left bg-white shadow-sm hover:shadow transition flex items-center justify-between">
+                            <div>
+                                <p class="font-bold text-slate-800">☕ Kopi Arabika 250g</p>
+                                <p class="text-[10px] font-mono text-slate-400">89900000003</p>
+                            </div>
+                            <span class="text-xs font-black text-emerald-600">Rp 45.000</span>
+                        </button>
+                        <button type="button" onclick="tutupModalKameraProduk(); scanBarcodeDanTambah('89900000004')" 
+                            class="p-2.5 border border-slate-200 hover:border-indigo-500 rounded-xl text-left bg-white shadow-sm hover:shadow transition flex items-center justify-between">
+                            <div>
+                                <p class="font-bold text-slate-800">📓 Buku Tulis Pak</p>
+                                <p class="text-[10px] font-mono text-slate-400">89900000004</p>
+                            </div>
+                            <span class="text-xs font-black text-emerald-600">Rp 38.000</span>
+                        </button>
+                        <button type="button" onclick="tutupModalKameraProduk(); scanBarcodeDanTambah('89900000005')" 
+                            class="p-2.5 border border-slate-200 hover:border-indigo-500 rounded-xl text-left bg-white shadow-sm hover:shadow transition flex items-center justify-between sm:col-span-2">
+                            <div>
+                                <p class="font-bold text-slate-800">💧 AQUAVIVA Botol</p>
+                                <p class="text-[10px] font-mono text-slate-400">89900000005</p>
+                            </div>
+                            <span class="text-xs font-black text-emerald-600">Rp 3.000</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Footer Informasi -->
+                <div class="bg-slate-50 p-3 rounded-2xl border border-slate-200 text-slate-600 flex items-center gap-2">
+                    <i data-lucide="info" class="w-4 h-4 text-emerald-600 shrink-0"></i>
+                    <p class="text-[11px] leading-tight">Saat barcode berhasil terdeteksi, sistem berbunyi 'beep' dan produk langsung terpilih di kasir.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- MODAL SCANNER BARCODE POS -->
     <div id="modalScannerPOS" class="fixed inset-0 z-50 hidden bg-slate-950/80 backdrop-blur-sm items-center justify-center p-3 sm:p-4 overflow-y-auto">
         <div class="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
@@ -380,9 +635,331 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
             document.getElementById('labelTotal').innerText = fmt(total);
         }
 
-        // ========================
-        // SCANNER POS
-        // ========================
+        // ==============================================================
+        // SCANNER BARCODE PRODUK (MULTI-CAMERA & FILE SCANNER BULLETPROOF)
+        // ==============================================================
+        let qrProduk = null;
+        let isCamProdukRunning = false;
+        let daftarKameraProduk = [];
+        let currentKameraIdProduk = null;
+
+        function bukaModalKameraProduk() {
+            const m = document.getElementById('modalKameraProduk');
+            m.classList.remove('hidden');
+            m.classList.add('flex');
+            if (typeof refreshIcons === 'function') refreshIcons();
+            else if (window.lucide) lucide.createIcons();
+            pilihTabModalProduk('kam');
+        }
+
+        function tutupModalKameraProduk() {
+            stopKameraProduk();
+            const m = document.getElementById('modalKameraProduk');
+            m.classList.add('hidden');
+            m.classList.remove('flex');
+        }
+
+        function pilihTabModalProduk(tab) {
+            ['kam', 'file', 'gun', 'sim'].forEach(t => {
+                const btn = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1) + 'Prd');
+                const con = document.getElementById('con' + t.charAt(0).toUpperCase() + t.slice(1) + 'Prd');
+                if (btn) btn.className = 'flex-1 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1 transition';
+                if (con) con.classList.add('hidden');
+            });
+
+            const selBtn = document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1) + 'Prd');
+            const selCon = document.getElementById('con' + tab.charAt(0).toUpperCase() + tab.slice(1) + 'Prd');
+            if (selBtn) selBtn.className = 'flex-1 py-1.5 rounded-xl bg-white text-emerald-700 shadow-sm flex items-center justify-center gap-1 transition';
+            if (selCon) selCon.classList.remove('hidden');
+
+            if (tab === 'kam') {
+                startKameraProduk();
+            } else {
+                stopKameraProduk();
+                if (tab === 'gun') {
+                    setTimeout(() => {
+                        const ig = document.getElementById('inpGunPrd');
+                        if (ig) ig.focus();
+                    }, 100);
+                }
+            }
+            if (typeof refreshIcons === 'function') refreshIcons();
+            else if (window.lucide) lucide.createIcons();
+        }
+
+        function startKameraProduk() {
+            const errBox = document.getElementById('errorKameraProduk');
+            if (errBox) errBox.classList.add('hidden');
+
+            if (typeof Html5Qrcode === 'undefined') {
+                tanganiErrorKamera("Library Html5Qrcode belum selesai dimuat. Silakan muat ulang halaman.");
+                return;
+            }
+
+            if (!qrProduk) {
+                qrProduk = new Html5Qrcode("readerKameraProduk");
+            }
+
+            // Dapatkan daftar video input devices (Webcam / HP / External)
+            Html5Qrcode.getCameras().then(devices => {
+                daftarKameraProduk = devices;
+                const wrapSel = document.getElementById('wrapKameraSelect');
+                const sel = document.getElementById('selectKameraDeviceProduk');
+
+                if (devices && devices.length > 0) {
+                    if (sel) {
+                        sel.innerHTML = '';
+                        devices.forEach((d, idx) => {
+                            const opt = document.createElement('option');
+                            opt.value = d.id;
+                            opt.text = d.label || ('Kamera ' + (idx + 1));
+                            sel.appendChild(opt);
+                        });
+                    }
+                    if (wrapSel && devices.length > 1) {
+                        wrapSel.classList.remove('hidden');
+                    }
+
+                    // Prioritaskan kamera belakang jika ada
+                    let targetCamId = currentKameraIdProduk || devices[0].id;
+                    if (!currentKameraIdProduk) {
+                        for (let d of devices) {
+                            const lbl = (d.label || '').toLowerCase();
+                            if (lbl.includes('back') || lbl.includes('belakang') || lbl.includes('rear') || lbl.includes('environment')) {
+                                targetCamId = d.id;
+                                break;
+                            }
+                        }
+                    }
+                    if (sel) sel.value = targetCamId;
+                    currentKameraIdProduk = targetCamId;
+                    jalankanStreamKamera(targetCamId);
+                } else {
+                    // Coba fallback tanpa deviceId spesifik (kompatibel webcam laptop biasa)
+                    jalankanStreamKamera({ facingMode: "user" });
+                }
+            }).catch(err => {
+                console.warn("getCameras gagal, coba fallback { video: true }:", err);
+                jalankanStreamKamera({ video: true });
+            });
+        }
+
+        function gantiKameraDevice(deviceId) {
+            currentKameraIdProduk = deviceId;
+            jalankanStreamKamera(deviceId);
+        }
+
+        function jalankanStreamKamera(cameraConfig) {
+            if (!qrProduk) qrProduk = new Html5Qrcode("readerKameraProduk");
+            
+            if (isCamProdukRunning) {
+                qrProduk.stop().then(() => {
+                    isCamProdukRunning = false;
+                    eksekusiStartKamera(cameraConfig);
+                }).catch(() => {
+                    eksekusiStartKamera(cameraConfig);
+                });
+            } else {
+                eksekusiStartKamera(cameraConfig);
+            }
+        }
+
+        function eksekusiStartKamera(cameraConfig) {
+            const ph = document.getElementById('phKameraProduk');
+            const errBox = document.getElementById('errorKameraProduk');
+            if (errBox) errBox.classList.add('hidden');
+
+            const scanConfig = {
+                fps: 15,
+                qrbox: (w, h) => {
+                    const min = Math.min(w, h);
+                    return { width: Math.floor(min * 0.85), height: Math.floor(min * 0.55) };
+                },
+                aspectRatio: 1.333333
+            };
+
+            qrProduk.start(
+                cameraConfig,
+                scanConfig,
+                (decodedText) => {
+                    tutupModalKameraProduk();
+                    scanBarcodeDanTambah(decodedText);
+                },
+                () => {}
+            ).then(() => {
+                isCamProdukRunning = true;
+                if (ph) ph.classList.add('hidden');
+            }).catch(err => {
+                console.error("Gagal start kamera produk:", err);
+                isCamProdukRunning = false;
+                
+                // Fallback kedua jika constraint spesifik ditolak browser
+                if (typeof cameraConfig === 'object') {
+                    qrProduk.start(
+                        { video: true },
+                        scanConfig,
+                        (decodedText) => {
+                            tutupModalKameraProduk();
+                            scanBarcodeDanTambah(decodedText);
+                        },
+                        () => {}
+                    ).then(() => {
+                        isCamProdukRunning = true;
+                        if (ph) ph.classList.add('hidden');
+                    }).catch(err2 => {
+                        tanganiErrorKamera(err2);
+                    });
+                } else {
+                    tanganiErrorKamera(err);
+                }
+            });
+        }
+
+        function stopKameraProduk() {
+            if (qrProduk && isCamProdukRunning) {
+                qrProduk.stop().then(() => {
+                    isCamProdukRunning = false;
+                    const ph = document.getElementById('phKameraProduk');
+                    if (ph) ph.classList.remove('hidden');
+                }).catch(err => console.error(err));
+            }
+        }
+
+        function tanganiErrorKamera(err) {
+            const ph = document.getElementById('phKameraProduk');
+            if (ph) ph.classList.remove('hidden');
+
+            let pesan = "Tidak dapat mengaktifkan kamera.";
+            const errStr = (err && err.toString ? err.toString() : '') + ' ' + (err && err.name ? err.name : '');
+
+            if (errStr.includes("NotAllowedError") || errStr.includes("Permission") || errStr.includes("denied")) {
+                pesan = "Izin Kamera Diblokir Browser! Klik tanda gembok 🔒 di samping 'localhost' pada address bar browser Anda, ubah Camera menjadi 'Allow', lalu klik Coba Lagi.";
+            } else if (errStr.includes("NotFoundError") || errStr.includes("DevicesNotFoundError")) {
+                pesan = "Kamera / Webcam tidak terdeteksi pada perangkat ini. Silakan gunakan tab 'Foto/File' atau 'Barcode Gun'.";
+            } else if (errStr.includes("NotReadableError") || errStr.includes("TrackStartError")) {
+                pesan = "Kamera sedang digunakan aplikasi lain (Zoom/Meet/Kamera Windows). Tutup aplikasi tersebut dan coba lagi.";
+            } else if (errStr.includes("OverconstrainedError")) {
+                pesan = "Resolusi kamera tidak mendukung constraint. Mengalihkan ke mode kamera standar...";
+            }
+
+            const errBox = document.getElementById('errorKameraProduk');
+            const errTxt = document.getElementById('errorKameraProdukText');
+            if (errBox && errTxt) {
+                errTxt.innerText = pesan;
+                errBox.classList.remove('hidden');
+            }
+        }
+
+        function scanBarcodeDariFile(files) {
+            if (!files || files.length === 0) return;
+            const file = files[0];
+
+            if (!qrProduk) {
+                qrProduk = new Html5Qrcode("readerKameraProduk");
+            }
+
+            tampilkanToast("🔍 Membaca barcode dari gambar...", "info");
+            qrProduk.scanFile(file, true)
+                .then(decodedText => {
+                    tutupModalKameraProduk();
+                    scanBarcodeDanTambah(decodedText);
+                })
+                .catch(err => {
+                    console.error("Gagal scan file:", err);
+                    tampilkanToast("Barcode tidak terbaca pada foto. Pastikan foto fokus dan jelas.", "warning");
+                    tanganiErrorKamera("Barcode tidak terdeteksi pada gambar. Pastikan gambar cukup terang dan barcode terlihat jelas.");
+                });
+        }
+
+        function submitManualBarcodeProduk() {
+            const inp = document.getElementById('inputBarcodeProduk');
+            const val = inp ? inp.value.trim() : '';
+            if (val !== '') {
+                scanBarcodeDanTambah(val);
+                inp.value = '';
+            }
+        }
+
+        // FUNGSI UTAMA: Scan Barcode via API & Tambahkan ke Kasir POS
+        function scanBarcodeDanTambah(barcode) {
+            if (!barcode) return;
+            
+            const statBox = document.getElementById('statusScanProduk');
+            const iconSpan = document.getElementById('iconStatusScan');
+            const pesanSpan = document.getElementById('pesanStatusScan');
+
+            if (statBox) {
+                statBox.className = "mt-3 p-2.5 rounded-xl text-xs font-bold flex items-center justify-between border bg-indigo-50 border-indigo-200 text-indigo-900";
+                if (iconSpan) iconSpan.innerHTML = '⏳';
+                if (pesanSpan) pesanSpan.innerText = 'Mencari barcode ' + barcode + '...';
+                statBox.classList.remove('hidden');
+            }
+
+            fetch('api_scan.php?barcode=' + encodeURIComponent(barcode))
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success' && data.found) {
+                        const prod = data.produk;
+                        playScannerBeep();
+
+                        // Cek apakah produk ini yang sedang terpilih di selectProduk
+                        const select = document.getElementById('selectProduk');
+                        const qtyInput = document.getElementById('inputQty');
+                        
+                        if (select && select.value == prod.id_produk) {
+                            // Jika produk sama, tambahkan kuantitas + 1
+                            const currentQty = parseInt(qtyInput.value) || 1;
+                            if (currentQty + 1 <= prod.stok) {
+                                qtyInput.value = currentQty + 1;
+                            } else {
+                                tampilkanToast("Stok " + prod.nama_produk + " tersisa " + prod.stok + " unit", "warning");
+                            }
+                        } else if (select) {
+                            // Pilih produk di dropdown form kasir
+                            select.value = prod.id_produk;
+                            if (qtyInput) qtyInput.value = 1;
+                        }
+
+                        // Hitung ulang total transaksi POS
+                        hitungTotalExpress();
+
+                        // Tampilkan status sukses
+                        if (statBox) {
+                            statBox.className = "mt-3 p-2.5 rounded-xl text-xs font-bold flex items-center justify-between border bg-emerald-50 border-emerald-300 text-emerald-900 shadow-sm";
+                            if (iconSpan) iconSpan.innerHTML = '✅';
+                            if (pesanSpan) pesanSpan.innerHTML = 'Produk <strong>' + prod.nama_produk + '</strong> (' + prod.harga_format + ') berhasil dimasukkan!';
+                        }
+                        
+                        tampilkanToast("✅ " + prod.nama_produk + " (" + prod.harga_format + ") dimasukkan!", "success");
+
+                        // Kembalikan fokus ke input barcode
+                        const inp = document.getElementById('inputBarcodeProduk');
+                        if (inp) {
+                            inp.value = '';
+                            inp.focus();
+                        }
+                    } else {
+                        if (statBox) {
+                            statBox.className = "mt-3 p-2.5 rounded-xl text-xs font-bold flex items-center justify-between border bg-rose-50 border-rose-300 text-rose-900";
+                            if (iconSpan) iconSpan.innerHTML = '⚠️';
+                            if (pesanSpan) pesanSpan.innerText = data.pesan || ('Barcode ' + barcode + ' tidak ditemukan!');
+                        }
+                        tampilkanToast("Barcode tidak ditemukan di sistem!", "error");
+                    }
+                })
+                .catch(err => {
+                    console.error(err);
+                    if (statBox) {
+                        statBox.className = "mt-3 p-2.5 rounded-xl text-xs font-bold flex items-center justify-between border bg-rose-50 border-rose-300 text-rose-900";
+                        if (iconSpan) iconSpan.innerHTML = '❌';
+                        if (pesanSpan) pesanSpan.innerText = 'Gagal menghubungi server scanner.';
+                    }
+                });
+        }
+
+        // ===================================
+        // SCANNER POS (PEMBAYARAN QRIS / EWALLET)
+        // ===================================
         let qrPOS = null;
         let isCamPOSRunning = false;
 
@@ -403,37 +980,69 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
 
         function pilihTabPOS(tab) {
             ['kam', 'gun', 'sim'].forEach(t => {
-                document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1) + 'POS').className = 'flex-1 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1';
-                document.getElementById('con' + t.charAt(0).toUpperCase() + t.slice(1) + 'POS').classList.add('hidden');
+                const btn = document.getElementById('tab' + t.charAt(0).toUpperCase() + t.slice(1) + 'POS');
+                const con = document.getElementById('con' + t.charAt(0).toUpperCase() + t.slice(1) + 'POS');
+                if (btn) btn.className = 'flex-1 py-1.5 rounded-xl text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1';
+                if (con) con.classList.add('hidden');
             });
             const selBtn = document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1) + 'POS');
             const selCon = document.getElementById('con' + tab.charAt(0).toUpperCase() + tab.slice(1) + 'POS');
-            selBtn.className = 'flex-1 py-1.5 rounded-xl bg-white text-indigo-700 shadow-sm flex items-center justify-center gap-1';
-            selCon.classList.remove('hidden');
+            if (selBtn) selBtn.className = 'flex-1 py-1.5 rounded-xl bg-white text-indigo-700 shadow-sm flex items-center justify-center gap-1';
+            if (selCon) selCon.classList.remove('hidden');
 
             if (tab === 'gun') {
                 stopKamPOS();
-                setTimeout(() => document.getElementById('inpGunPOS').focus(), 100);
+                setTimeout(() => {
+                    const ig = document.getElementById('inpGunPOS');
+                    if (ig) ig.focus();
+                }, 100);
             } else if (tab === 'sim') {
                 stopKamPOS();
+            } else if (tab === 'kam') {
+                startKamPOS();
             }
             refreshIcons();
         }
 
         function startKamPOS() {
             if (typeof Html5Qrcode === 'undefined') return;
-            document.getElementById('phPOS').classList.add('hidden');
+            const ph = document.getElementById('phPOS');
             if (!qrPOS) qrPOS = new Html5Qrcode("readerPOS");
-            qrPOS.start({ facingMode: "environment" }, { fps: 15, qrbox: { width: 220, height: 220 } }, (txt) => {
-                prosesScanPOS(txt);
-            }, () => {}).then(() => { isCamPOSRunning = true; });
+            
+            const scanConfig = { fps: 15, qrbox: { width: 220, height: 220 } };
+
+            Html5Qrcode.getCameras().then(devices => {
+                let targetId = (devices && devices.length > 0) ? devices[0].id : { video: true };
+                qrPOS.start(targetId, scanConfig, (txt) => {
+                    prosesScanPOS(txt);
+                }, () => {}).then(() => {
+                    isCamPOSRunning = true;
+                    if (ph) ph.classList.add('hidden');
+                }).catch(() => {
+                    // Fallback video true
+                    qrPOS.start({ video: true }, scanConfig, (txt) => {
+                        prosesScanPOS(txt);
+                    }, () => {}).then(() => {
+                        isCamPOSRunning = true;
+                        if (ph) ph.classList.add('hidden');
+                    }).catch(e => console.error("Kamera POS gagal:", e));
+                });
+            }).catch(() => {
+                qrPOS.start({ video: true }, scanConfig, (txt) => {
+                    prosesScanPOS(txt);
+                }, () => {}).then(() => {
+                    isCamPOSRunning = true;
+                    if (ph) ph.classList.add('hidden');
+                }).catch(e => console.error("Kamera POS fallback gagal:", e));
+            });
         }
 
         function stopKamPOS() {
             if (qrPOS && isCamPOSRunning) {
                 qrPOS.stop().then(() => {
                     isCamPOSRunning = false;
-                    document.getElementById('phPOS').classList.remove('hidden');
+                    const ph = document.getElementById('phPOS');
+                    if (ph) ph.classList.remove('hidden');
                 }).catch(e => console.error(e));
             }
         }
@@ -463,6 +1072,35 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
 
         document.addEventListener('DOMContentLoaded', () => {
             hitungTotalExpress();
+            
+            // Listener Barcode Gun di Terminal POS
+            const ib = document.getElementById('inputBarcodeProduk');
+            if (ib) {
+                ib.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        submitManualBarcodeProduk();
+                    }
+                });
+            }
+
+            // Listener Barcode Gun di Modal Produk
+            const igPrd = document.getElementById('inpGunPrd');
+            if (igPrd) {
+                igPrd.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (igPrd.value.trim() !== '') {
+                            const val = igPrd.value.trim();
+                            igPrd.value = '';
+                            tutupModalKameraProduk();
+                            scanBarcodeDanTambah(val);
+                        }
+                    }
+                });
+            }
+
+            // Listener Barcode Gun di Modal Pembayaran
             const ig = document.getElementById('inpGunPOS');
             if (ig) {
                 ig.addEventListener('keydown', (e) => {

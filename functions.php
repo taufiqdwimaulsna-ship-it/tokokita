@@ -36,6 +36,31 @@ if ($cek_v['c'] == 0) {
         ('GAJIAN25', 25, 300000)");
 }
 
+// Otomatis memastikan kolom barcode tersedia di tbl_produk untuk fitur Scanner Barcode Produk
+$cek_col = mysqli_query($conn, "SHOW COLUMNS FROM tbl_produk LIKE 'barcode'");
+if (mysqli_num_rows($cek_col) == 0) {
+    @mysqli_query($conn, "ALTER TABLE tbl_produk ADD COLUMN barcode VARCHAR(50) DEFAULT NULL AFTER id_kategori");
+    @mysqli_query($conn, "CREATE UNIQUE INDEX idx_barcode ON tbl_produk (barcode)");
+}
+
+function getFotoProduk($nama, $foto_url = '') {
+    if (!empty($foto_url)) return $foto_url;
+    $n = strtolower($nama);
+    if (strpos($n, 'beras') !== false) return 'https://images.unsplash.com/photo-1586201375761-83865001e31c?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'minyak') !== false) return 'https://images.unsplash.com/photo-1474979266404-7eaacbcd87c5?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'kopi') !== false) return 'https://images.unsplash.com/photo-1559056199-641a0ac8b55e?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'buku') !== false) return 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'aqua') !== false) return 'https://images.unsplash.com/photo-1548839140-29a749e1bc4e?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'sepatu') !== false || strpos($n, 'shoes') !== false) return 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'motorola') !== false || strpos($n, 'hp') !== false) return 'https://images.unsplash.com/photo-1598327105666-5b89351aff97?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'audio') !== false || strpos($n, 'keyboard') !== false) return 'https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'kulkas') !== false) return 'https://images.unsplash.com/photo-1584992236310-6edddc08acff?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'grinder') !== false) return 'https://images.unsplash.com/photo-1504148455328-c376907d081c?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'gps') !== false) return 'https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=500&auto=format&fit=crop&q=80';
+    if (strpos($n, 'jaket') !== false) return 'https://images.unsplash.com/photo-1551028719-00167b16eac5?w=500&auto=format&fit=crop&q=80';
+    return 'https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?w=500&auto=format&fit=crop&q=80';
+}
+
 function rupiah($angka) {
     return "Rp " . number_format((float)$angka, 0, ',', '.');
 }

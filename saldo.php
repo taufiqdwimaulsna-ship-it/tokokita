@@ -4,7 +4,7 @@
  * File: saldo.php
  */
 require_once 'functions.php';
-cekLogin();
+batasiAksesPelanggan();
 
 $notif = "";
 $error = "";

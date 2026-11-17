@@ -11,8 +11,42 @@ if (isset($_SESSION['pesan_akses'])) {
     unset($_SESSION['pesan_akses']);
 }
 
-// 1. Tambah Pelanggan via Stored Procedure
-if (isset($_POST['tambah_pelanggan'])) {
+// 1. Tambah Item ke Keranjang Langsung dari Dashboard Belanja
+if (isset($_POST['masuk_keranjang'])) {
+    if (!isset($_SESSION['keranjang'])) {
+        $_SESSION['keranjang'] = [];
+    }
+    $id_produk = (int)$_POST['id_produk'];
+    $jumlah    = max(1, (int)$_POST['jumlah']);
+
+    $q_cek = mysqli_query($conn, "SELECT *, HitungTotal(harga, $jumlah) AS subtotal FROM tbl_produk WHERE id_produk = $id_produk");
+    $prod  = mysqli_fetch_assoc($q_cek);
+
+    if ($prod) {
+        if ($jumlah > $prod['stok']) {
+            $notif_error = "Stok tidak mencukupi! Stok {$prod['nama_produk']} tersisa {$prod['stok']} unit.";
+        } else {
+            if (isset($_SESSION['keranjang'][$id_produk])) {
+                $_SESSION['keranjang'][$id_produk]['jumlah'] += $jumlah;
+                $jml_baru = $_SESSION['keranjang'][$id_produk]['jumlah'];
+                $res_sub  = mysqli_fetch_assoc(mysqli_query($conn, "SELECT HitungTotal({$prod['harga']}, $jml_baru) AS sub"));
+                $_SESSION['keranjang'][$id_produk]['subtotal'] = $res_sub['sub'];
+            } else {
+                $_SESSION['keranjang'][$id_produk] = [
+                    'id_produk'   => $prod['id_produk'],
+                    'nama_produk' => $prod['nama_produk'],
+                    'harga'       => $prod['harga'],
+                    'jumlah'      => $jumlah,
+                    'subtotal'    => $prod['subtotal']
+                ];
+            }
+            $notif_sukses = "{$prod['nama_produk']} berhasil ditambahkan ke Keranjang Belanja!";
+        }
+    }
+}
+
+// 2. Tambah Pelanggan via Stored Procedure (Khusus Admin/Kasir)
+if (isset($_POST['tambah_pelanggan']) && !isPelanggan()) {
     $nama = mysqli_real_escape_string($conn, $_POST['nama_pelanggan']);
     $kota = mysqli_real_escape_string($conn, $_POST['kota']);
 
@@ -24,8 +58,8 @@ if (isset($_POST['tambah_pelanggan'])) {
     }
 }
 
-// 2. Transaksi Baru via Stored Procedure + Function + Trigger Stok
-if (isset($_POST['tambah_transaksi'])) {
+// 3. Transaksi Baru via Stored Procedure (Khusus Admin/Kasir)
+if (isset($_POST['tambah_transaksi']) && !isPelanggan()) {
     $id_pelanggan = (int)$_POST['id_pelanggan'];
     $id_produk    = (int)$_POST['id_produk'];
     $jumlah       = (int)$_POST['jumlah'];
@@ -39,260 +73,579 @@ if (isset($_POST['tambah_transaksi'])) {
     }
 }
 
-// 3. Uji Trigger Validasi Transaksi Negatif
-if (isset($_POST['uji_negatif'])) {
-    $sql = "INSERT INTO tbl_transaksi (tanggal, id_pelanggan, total_belanja) VALUES (CURDATE(), 1, -50000)";
-    if (!mysqli_query($conn, $sql)) {
-        $notif_error = "Trigger Validasi Aktif (Ditolak Database): " . mysqli_error($conn);
+// Pemeriksaan Role Pengguna
+$is_role_pelanggan = isPelanggan();
+$nama_user_login   = isset($_SESSION['nama_lengkap']) ? $_SESSION['nama_lengkap'] : 'User';
+
+// Data Personal Khusus Akun Pelanggan
+$id_pel_saya = 0;
+$stat_saya = ['total_trx' => 0, 'total_belanja' => 0];
+$q_riwayat_saya = null;
+
+if ($is_role_pelanggan) {
+    $escaped_nama = mysqli_real_escape_string($conn, $nama_user_login);
+    $q_pel_cari   = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan WHERE nama_pelanggan = '$escaped_nama' LIMIT 1");
+    if ($r_pel = mysqli_fetch_assoc($q_pel_cari)) {
+        $id_pel_saya = (int)$r_pel['id_pelanggan'];
+    }
+
+    if ($id_pel_saya > 0) {
+        $q_sum_saya = mysqli_query($conn, "SELECT COUNT(*) AS total_trx, COALESCE(SUM(total_belanja),0) AS total_belanja FROM tbl_transaksi WHERE id_pelanggan = $id_pel_saya");
+        if ($r_ss = mysqli_fetch_assoc($q_sum_saya)) {
+            $stat_saya = $r_ss;
+        }
+        $q_riwayat_saya = mysqli_query($conn, "SELECT * FROM tbl_transaksi WHERE id_pelanggan = $id_pel_saya ORDER BY id_transaksi DESC LIMIT 5");
     }
 }
 
-// Statistik Ringkas untuk Kartu Dashboard Atas
+// Statistik Global Toko (Hanya untuk Admin/Kasir)
 $stat_omzet = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(total_belanja),0) AS omzet, COUNT(*) AS jml_trx FROM tbl_transaksi"));
 $stat_pel   = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS jml_pel FROM tbl_pelanggan"));
 $stat_prod  = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(stok),0) AS total_stok FROM tbl_produk"));
 
-// Query Laporan Utama
-$q_rekap = mysqli_query($conn, "
-    SELECT id_pelanggan, nama_pelanggan, total_transaksi, total_belanja,
-           HitungPajak(total_belanja) AS estimasi_ppn,
-           KategoriBelanja(total_belanja) AS kategori
-    FROM view_total_belanja
+// Query Rekapitulasi Member (Hanya untuk Admin/Kasir)
+$q_rekap = null;
+if (!$is_role_pelanggan) {
+    $q_rekap = mysqli_query($conn, "
+        SELECT id_pelanggan, nama_pelanggan, total_transaksi, total_belanja,
+               HitungPajak(total_belanja) AS estimasi_ppn,
+               KategoriBelanja(total_belanja) AS kategori
+        FROM view_total_belanja
+    ");
+}
+
+// Query Produk Katalog Mall untuk Grid Rekomendasi
+$q_katalog_mall = mysqli_query($conn, "
+    SELECT p.*, k.nama_kategori 
+    FROM tbl_produk p 
+    LEFT JOIN tbl_kategori k ON p.id_kategori = k.id_kategori 
+    ORDER BY p.id_produk DESC 
+    LIMIT 24
 ");
-$q_transaksi = mysqli_query($conn, "SELECT * FROM view_transaksi_pelanggan ORDER BY id_transaksi DESC LIMIT 7");
-$q_subquery  = mysqli_query($conn, "
-    SELECT t.id_transaksi, p.nama_pelanggan, t.tanggal, t.total_belanja 
-    FROM tbl_transaksi t JOIN tbl_pelanggan p ON t.id_pelanggan = p.id_pelanggan
-    WHERE t.total_belanja > (SELECT AVG(total_belanja) FROM tbl_transaksi)
-    ORDER BY t.total_belanja DESC LIMIT 5
-");
-$q_produk = mysqli_query($conn, "SELECT * FROM tbl_produk");
-$q_log    = mysqli_query($conn, "SELECT * FROM log_pelanggan ORDER BY id_log DESC LIMIT 4");
-$q_audit  = mysqli_query($conn, "SELECT * FROM tbl_log ORDER BY id_log DESC LIMIT 4");
+
+$q_produk_opt = mysqli_query($conn, "SELECT * FROM tbl_produk");
+$jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjang']) : 0;
 ?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <title>Dashboard POS - TokoKita</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Belanja - TokoKita Smart Mall</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
 </head>
-<body class="bg-slate-100 text-slate-800 font-sans min-h-screen">
+<body class="bg-slate-100/70 text-slate-800 font-sans min-h-screen selection:bg-[#ee4d2d] selection:text-white pb-16">
 
- 
-   
-        <!-- Navbar Atas dengan Navigasi Lengkap & Tombol Logout -->
-    <nav class="bg-slate-900 text-white shadow-lg sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-6 py-4 flex flex-wrap justify-between items-center gap-4">
-            <div class="flex items-center gap-3">
-                <div class="bg-indigo-600 p-2 rounded-xl">
-                    <i data-lucide="shopping-bag" class="w-6 h-6 text-white"></i>
-                </div>
-                <div>
-                    <h1 class="font-bold text-lg tracking-tight">TokoKita Enterprise</h1>
-                    <p class="text-xs text-slate-400">Advanced Database Programming • db_tokokita</p>
-                </div>
-            </div>
+    <!-- Global TokoKita Navbar -->
+    <?php include 'navbar.php'; ?>
 
-            <div class="flex flex-wrap items-center gap-2 text-xs font-semibold">
-                <a href="index.php" class="px-3.5 py-2 rounded-xl bg-indigo-600 text-white flex items-center gap-1.5 shadow">
-                    <i data-lucide="layout-dashboard" class="w-4 h-4"></i> Dashboard
-                </a>
-                <a href="kategori.php" class="px-3.5 py-2 rounded-xl text-slate-300 hover:bg-slate-800 flex items-center gap-1.5 transition">
-                    <i data-lucide="layers" class="w-4 h-4"></i> Kategori & Produk
-                </a>
-                <a href="keranjang.php" class="px-3.5 py-2 rounded-xl text-slate-300 hover:bg-slate-800 flex items-center gap-1.5 transition">
-                    <i data-lucide="shopping-cart" class="w-4 h-4"></i> <?= isPelanggan() ? 'Keranjang Belanja' : 'Keranjang Kasir' ?>
-                </a>
+    <!-- Sub-Navbar Tab Kategori & Promo dengan Tombol Geser Scroll Kiri & Kanan -->
+    <div class="bg-white border-b border-slate-200/90 shadow-sm sticky top-[69px] z-40">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex items-center gap-1.5 py-1.5">
+                <!-- Tombol Scroll Sub-Nav Kiri -->
+                <button type="button" onclick="scrollSubNav('left')" class="p-1.5 text-slate-500 hover:text-[#ee4d2d] bg-slate-100 hover:bg-rose-50 border border-slate-300 rounded-lg shrink-0 transition active:scale-75 cursor-pointer z-10 shadow-sm" title="Pindah tab promo ke kiri">
+                    <i data-lucide="chevron-left" class="w-4 h-4 pointer-events-none"></i>
+                </button>
 
-                <?php if (!isPelanggan()): ?>
-                <a href="laporan.php" class="px-3.5 py-2 rounded-xl text-slate-300 hover:bg-slate-800 flex items-center gap-1.5 transition">
-                    <i data-lucide="file-bar-chart" class="w-4 h-4"></i> Laporan SQL
-                </a>
-
-                <form method="POST" class="inline">
-                    <button type="submit" name="uji_negatif" class="bg-amber-500/20 border border-amber-500/40 hover:bg-amber-500/30 text-amber-300 px-3 py-2 rounded-xl flex items-center gap-1.5 transition">
-                        <i data-lucide="shield-alert" class="w-4 h-4"></i> Uji Trigger
+                <!-- Kontainer Tab Promo Shopee SPayLater -->
+                <div id="containerSubNavPromo" class="flex-1 min-w-0 flex items-center gap-1 sm:gap-2 overflow-x-auto scroll-smooth no-scrollbar py-0.5 text-[11px] sm:text-xs font-semibold whitespace-nowrap text-slate-600">
+                    <button type="button" onclick="pilihFilterHomePromo('', this)" class="tab-promo-item px-3 py-1.5 rounded-lg font-bold text-[#ee4d2d] bg-rose-50 border border-rose-200/80 transition flex items-center gap-1.5 shrink-0 cursor-pointer">
+                        <span class="dot-aktif w-1.5 h-1.5 rounded-full bg-[#ee4d2d] shrink-0"></span>
+                        <span>Voucher Spesial SPayLater</span>
                     </button>
-                </form>
-                <?php endif; ?>
-
-                <div class="hidden md:flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700">
-                    <i data-lucide="user-check" class="w-4 h-4 text-emerald-400"></i>
-                    <div class="text-xs">
-                        <p class="font-semibold text-white"><?= htmlspecialchars($_SESSION['nama_lengkap'] ?? 'User') ?></p>
-                        <p class="text-[10px] text-slate-400"><?= htmlspecialchars($_SESSION['role'] ?? 'Pelanggan') ?></p>
-                    </div>
+                    <button type="button" onclick="pilihFilterHomePromo('0%', this)" class="tab-promo-item px-3 py-1.5 rounded-lg hover:text-[#ee4d2d] hover:bg-slate-50 transition shrink-0 cursor-pointer">
+                        Cicilan Pasti 0%
+                    </button>
+                    <button type="button" onclick="pilihFilterHomePromo('kategori', this)" class="tab-promo-item px-3 py-1.5 rounded-lg hover:text-[#ee4d2d] hover:bg-slate-50 transition shrink-0 cursor-pointer">
+                        Belanja Bds. Kategori
+                    </button>
+                    <button type="button" onclick="pilihFilterHomePromo('cicilan', this)" class="tab-promo-item px-3 py-1.5 rounded-lg hover:text-[#ee4d2d] hover:bg-slate-50 transition shrink-0 cursor-pointer">
+                        Cicilan Ringan
+                    </button>
+                    <button type="button" onclick="pilihFilterHomePromo('xtra', this)" class="tab-promo-item px-3 py-1.5 rounded-lg hover:text-[#ee4d2d] hover:bg-slate-50 transition shrink-0 cursor-pointer">
+                        Koleksi Pilihan
+                    </button>
+                    <button type="button" onclick="pilihFilterHomePromo('level', this)" class="tab-promo-item px-3 py-1.5 rounded-lg hover:text-[#ee4d2d] hover:bg-slate-50 transition shrink-0 cursor-pointer">
+                        SPayLater Level
+                    </button>
+                    <button type="button" onclick="pilihFilterHomePromo('digital', this)" class="tab-promo-item px-3 py-1.5 rounded-lg hover:text-[#ee4d2d] hover:bg-slate-50 transition shrink-0 cursor-pointer">
+                        Belanja Produk Digital
+                    </button>
+                    <button type="button" onclick="pilihFilterHomePromo('qris', this)" class="tab-promo-item px-3 py-1.5 rounded-lg hover:text-[#ee4d2d] hover:bg-slate-50 transition shrink-0 cursor-pointer">
+                        SPayLater Bayar QRIS
+                    </button>
                 </div>
 
-                <a href="logout.php" onclick="return confirm('Yakin ingin keluar dari sistem?')"
-                   class="bg-rose-600 hover:bg-rose-700 text-white px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow-lg shadow-rose-600/30 transition">
-                    <i data-lucide="log-out" class="w-4 h-4"></i> Logout
-                </a>
+                <!-- Tombol Scroll Sub-Nav Kanan -->
+                <button type="button" onclick="scrollSubNav('right')" class="p-1.5 text-slate-500 hover:text-[#ee4d2d] bg-slate-100 hover:bg-rose-50 border border-slate-300 rounded-lg shrink-0 transition active:scale-75 cursor-pointer z-10 shadow-sm" title="Pindah tab promo ke kanan">
+                    <i data-lucide="chevron-right" class="w-4 h-4 pointer-events-none"></i>
+                </button>
             </div>
         </div>
-    </nav>
+    </div>
 
-    <main class="max-w-7xl mx-auto p-6 space-y-6">
+    <script>
+        // Fungsi Pindah Tab & Bergeser Horizontal Halus
+        function scrollSubNav(direction) {
+            const tabs = Array.from(document.querySelectorAll('#containerSubNavPromo .tab-promo-item'));
+            if (tabs.length === 0) return;
+
+            let activeIdx = tabs.findIndex(t => t.classList.contains('font-bold') || t.classList.contains('bg-rose-50'));
+            if (activeIdx === -1) activeIdx = 0;
+
+            let targetIdx;
+            if (direction === 'left') {
+                targetIdx = (activeIdx - 1 + tabs.length) % tabs.length;
+            } else {
+                targetIdx = (activeIdx + 1) % tabs.length;
+            }
+
+            const targetTab = tabs[targetIdx];
+            if (targetTab) {
+                targetTab.click();
+                targetTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+            }
+        }
+
+        // Fungsi Filter Promo & Aktifkan Tab
+        function pilihFilterHomePromo(tipe, btn) {
+            document.querySelectorAll('.tab-promo-item').forEach(b => {
+                b.classList.remove('font-bold', 'text-[#ee4d2d]', 'bg-rose-50', 'border', 'border-rose-200/80');
+                b.classList.add('text-slate-600', 'hover:text-[#ee4d2d]', 'hover:bg-slate-50');
+                const dot = b.querySelector('.dot-aktif');
+                if (dot) dot.remove();
+            });
+
+            btn.classList.remove('text-slate-600', 'hover:bg-slate-50');
+            btn.classList.add('font-bold', 'text-[#ee4d2d]', 'bg-rose-50', 'border', 'border-rose-200/80');
+            if (!btn.querySelector('.dot-aktif')) {
+                const dot = document.createElement('span');
+                dot.className = 'dot-aktif w-1.5 h-1.5 rounded-full bg-[#ee4d2d] shrink-0';
+                btn.insertBefore(dot, btn.firstChild);
+            }
+
+            const filterKey = tipe.toLowerCase().trim();
+            const cards = document.querySelectorAll('.card-mall-item');
+
+            cards.forEach(card => {
+                const promo = (card.getAttribute('data-promo') || '').toLowerCase();
+                const kat = (card.getAttribute('data-kategori') || '').toLowerCase();
+
+                let cocok = false;
+                if (filterKey === '' || filterKey === 'semua' || filterKey === 'voucher') {
+                    cocok = true;
+                } else if (filterKey === 'kategori') {
+                    cocok = true;
+                } else {
+                    cocok = promo.includes(filterKey) || kat.includes(filterKey);
+                }
+
+                card.style.display = cocok ? 'flex' : 'none';
+            });
+
+            if (filterKey === 'kategori') {
+                const sec = document.getElementById('sectionKatalogMall');
+                if (sec) {
+                    sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }
+        }
+    </script>
+
+    <main class="max-w-7xl mx-auto p-3 sm:p-5 space-y-4 sm:space-y-6">
 
         <!-- Notifikasi -->
         <?php if ($notif_sukses): ?>
-            <div class="bg-emerald-50 border border-emerald-300 text-emerald-800 px-4 py-3 rounded-2xl flex items-center gap-2 text-sm font-medium shadow-sm">
-                <i data-lucide="check-circle-2" class="w-5 h-5 text-emerald-600"></i> <?= $notif_sukses ?>
+            <div class="bg-emerald-50 border border-emerald-300 text-emerald-900 px-4 py-3 rounded-2xl flex items-center justify-between gap-3 text-xs font-bold shadow-sm">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-6 h-6 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                        <i data-lucide="check" class="w-3.5 h-3.5"></i>
+                    </div>
+                    <span><?= $notif_sukses ?></span>
+                </div>
+                <a href="keranjang.php" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded-xl text-xs font-bold transition flex items-center gap-1 shrink-0">
+                    <i data-lucide="shopping-cart" class="w-3.5 h-3.5"></i> Lihat Keranjang (<?= $jml_keranjang_aktif ?>) →
+                </a>
             </div>
         <?php endif; ?>
+
         <?php if ($notif_error): ?>
-            <div class="bg-rose-50 border border-rose-300 text-rose-800 px-4 py-3 rounded-2xl flex items-center gap-2 text-sm font-medium shadow-sm">
-                <i data-lucide="alert-triangle" class="w-5 h-5 text-rose-600"></i> <?= $notif_error ?>
+            <div class="bg-rose-50 border border-rose-300 text-rose-800 px-4 py-3 rounded-2xl flex items-center gap-2.5 text-xs font-bold shadow-sm">
+                <i data-lucide="alert-triangle" class="w-5 h-5 text-rose-600 shrink-0"></i> 
+                <span><?= $notif_error ?></span>
             </div>
         <?php endif; ?>
 
-        <!-- 4 Stat Cards Ala Retaillet Dashboard (Bab 6) -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-            <div class="bg-gradient-to-br from-amber-500 to-orange-600 text-white p-5 rounded-2xl shadow-md flex justify-between items-center">
-                <div>
-                    <p class="text-xs font-medium text-amber-100 uppercase">Total Penjualan</p>
-                    <h3 class="text-2xl font-extrabold mt-1">Rp <?= number_format($stat_omzet['omzet'], 0, ',', '.') ?></h3>
-                </div>
-                <div class="bg-white/20 p-3 rounded-xl"><i data-lucide="wallet" class="w-6 h-6"></i></div>
-            </div>
-
-            <div class="bg-gradient-to-br from-indigo-600 to-blue-700 text-white p-5 rounded-2xl shadow-md flex justify-between items-center">
-                <div>
-                    <p class="text-xs font-medium text-indigo-100 uppercase">Total Transaksi</p>
-                    <h3 class="text-2xl font-extrabold mt-1"><?= $stat_omzet['jml_trx'] ?> Pesanan</h3>
-                </div>
-                <div class="bg-white/20 p-3 rounded-xl"><i data-lucide="receipt" class="w-6 h-6"></i></div>
-            </div>
-
-            <div class="bg-gradient-to-br from-emerald-500 to-teal-600 text-white p-5 rounded-2xl shadow-md flex justify-between items-center">
-                <div>
-                    <p class="text-xs font-medium text-emerald-100 uppercase">Total Pelanggan</p>
-                    <h3 class="text-2xl font-extrabold mt-1"><?= $stat_pel['jml_pel'] ?> Member</h3>
-                </div>
-                <div class="bg-white/20 p-3 rounded-xl"><i data-lucide="users" class="w-6 h-6"></i></div>
-            </div>
-
-            <div class="bg-gradient-to-br from-purple-600 to-fuchsia-700 text-white p-5 rounded-2xl shadow-md flex justify-between items-center">
-                <div>
-                    <p class="text-xs font-medium text-purple-100 uppercase">Stok Barang Tersedia</p>
-                    <h3 class="text-2xl font-extrabold mt-1"><?= $stat_prod['total_stok'] ?> Unit</h3>
-                </div>
-                <div class="bg-white/20 p-3 rounded-xl"><i data-lucide="package-check" class="w-6 h-6"></i></div>
-            </div>
-        </div>
-
-        <!-- Aksi Dashboard: Disesuaikan Berdasarkan Role Pengguna -->
-        <?php if (isPelanggan()): ?>
-        <!-- Panel Navigasi Cepat Khusus Akun Pelanggan (Hanya Dashboard, Kategori, dan Keranjang) -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="bg-gradient-to-br from-indigo-900 via-indigo-950 to-slate-900 text-white p-6 rounded-3xl shadow-md border border-indigo-800/40 space-y-3 flex flex-col justify-between">
-                <div>
-                    <div class="w-10 h-10 rounded-2xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-amber-300 mb-3">
-                        <i data-lucide="layers" class="w-5 h-5"></i>
+        <!-- Stat Cards Disesuaikan Berdasarkan Role -->
+        <?php if ($is_role_pelanggan): ?>
+        <!-- Stat Cards Khusus Akun Pelanggan -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
+                <div class="space-y-0.5">
+                    <p class="text-[10px] sm:text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Akun Pembeli</p>
+                    <h3 class="text-base sm:text-lg font-black text-slate-900 group-hover:text-indigo-600 transition truncate max-w-[130px] sm:max-w-[160px]"><?= htmlspecialchars($nama_user_login) ?></h3>
+                    <div class="inline-flex items-center gap-1 text-[10px] text-indigo-600 font-extrabold bg-indigo-50 px-2 py-0.5 rounded-full">
+                        <i data-lucide="badge-check" class="w-3 h-3"></i>
+                        <span>Pelanggan Mall</span>
                     </div>
-                    <h2 class="text-base font-black">Katalog Kategori & Produk</h2>
-                    <p class="text-xs text-indigo-200 mt-1">Jelajahi berbagai pilihan produk kebutuhan harian dengan harga bersaing dan transparansi PPN.</p>
                 </div>
-                <div class="pt-3">
-                    <a href="kategori.php" class="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-2xl text-xs font-bold transition inline-flex items-center gap-2 shadow-lg shadow-indigo-600/30">
-                        <i data-lucide="shopping-bag" class="w-4 h-4"></i> Buka Katalog Produk →
-                    </a>
+                <div class="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-md shadow-indigo-600/20 shrink-0">
+                    <i data-lucide="user-check" class="w-5 h-5"></i>
                 </div>
             </div>
 
-            <div class="bg-gradient-to-br from-emerald-900 via-emerald-950 to-slate-900 text-white p-6 rounded-3xl shadow-md border border-emerald-800/40 space-y-3 flex flex-col justify-between">
-                <div>
-                    <div class="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-300 mb-3">
-                        <i data-lucide="shopping-cart" class="w-5 h-5"></i>
+            <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
+                <div class="space-y-0.5">
+                    <p class="text-[10px] sm:text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Pesanan Saya</p>
+                    <h3 class="text-lg sm:text-2xl font-black text-slate-900 group-hover:text-emerald-600 transition"><?= $stat_saya['total_trx'] ?> <span class="text-xs font-semibold text-slate-400">Order</span></h3>
+                    <div class="inline-flex items-center gap-1 text-[10px] text-emerald-600 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-full">
+                        <i data-lucide="receipt" class="w-3 h-3"></i>
+                        <span>Riwayat Belanja</span>
                     </div>
-                    <h2 class="text-base font-black">Keranjang Belanja Pelanggan</h2>
-                    <p class="text-xs text-emerald-200 mt-1">Periksa barang belanjaan yang telah Anda pilih dan selesaikan pesanan dengan mudah.</p>
                 </div>
-                <div class="pt-3">
-                    <a href="keranjang.php" class="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2.5 rounded-2xl text-xs font-bold transition inline-flex items-center gap-2 shadow-lg shadow-emerald-600/30">
-                        <i data-lucide="arrow-right-circle" class="w-4 h-4"></i> Buka Keranjang Belanja →
-                    </a>
+                <div class="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-500 text-white flex items-center justify-center shadow-md shadow-emerald-500/20 shrink-0">
+                    <i data-lucide="shopping-bag" class="w-5 h-5"></i>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
+                <div class="space-y-0.5">
+                    <p class="text-[10px] sm:text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Total Belanja Saya</p>
+                    <h3 class="text-base sm:text-xl font-black text-slate-900 group-hover:text-amber-600 transition"><?= rupiah($stat_saya['total_belanja']) ?></h3>
+                    <div class="inline-flex items-center gap-1 text-[10px] text-amber-600 font-extrabold bg-amber-50 px-2 py-0.5 rounded-full">
+                        <i data-lucide="wallet" class="w-3 h-3"></i>
+                        <span>Pengeluaran Anda</span>
+                    </div>
+                </div>
+                <div class="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20 shrink-0">
+                    <i data-lucide="wallet" class="w-5 h-5"></i>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
+                <div class="space-y-0.5">
+                    <p class="text-[10px] sm:text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Keranjang Belanja</p>
+                    <h3 class="text-lg sm:text-2xl font-black text-slate-900 group-hover:text-[#ee4d2d] transition"><?= $jml_keranjang_aktif ?> <span class="text-xs font-semibold text-slate-400">Item</span></h3>
+                    <div class="inline-flex items-center gap-1 text-[10px] text-[#ee4d2d] font-extrabold bg-rose-50 px-2 py-0.5 rounded-full">
+                        <i data-lucide="shopping-cart" class="w-3 h-3"></i>
+                        <span>Siap Checkout</span>
+                    </div>
+                </div>
+                <div class="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-tr from-[#ee4d2d] to-orange-500 text-white flex items-center justify-center shadow-md shadow-[#ee4d2d]/25 shrink-0">
+                    <i data-lucide="shopping-cart" class="w-5 h-5"></i>
                 </div>
             </div>
         </div>
         <?php else: ?>
+        <!-- Stat Cards Khusus Administrator & Kasir POS -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
+                <div class="space-y-1">
+                    <p class="text-[10.5px] font-extrabold text-slate-400 uppercase tracking-wider">Total Penjualan</p>
+                    <h3 class="text-xl sm:text-2xl font-black text-slate-900 group-hover:text-amber-600 transition"><?= rupiah($stat_omzet['omzet']) ?></h3>
+                    <div class="inline-flex items-center gap-1 text-[10px] text-amber-600 font-extrabold bg-amber-50 px-2 py-0.5 rounded-full">
+                        <i data-lucide="trending-up" class="w-3 h-3"></i>
+                        <span>Omzet Toko</span>
+                    </div>
+                </div>
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 text-white flex items-center justify-center shadow-lg shadow-amber-500/25 shrink-0">
+                    <i data-lucide="wallet" class="w-6 h-6"></i>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
+                <div class="space-y-1">
+                    <p class="text-[10.5px] font-extrabold text-slate-400 uppercase tracking-wider">Total Transaksi</p>
+                    <h3 class="text-xl sm:text-2xl font-black text-slate-900 group-hover:text-indigo-600 transition"><?= $stat_omzet['jml_trx'] ?> <span class="text-xs font-semibold text-slate-400">Order</span></h3>
+                    <div class="inline-flex items-center gap-1 text-[10px] text-indigo-600 font-extrabold bg-indigo-50 px-2 py-0.5 rounded-full">
+                        <i data-lucide="receipt" class="w-3 h-3"></i>
+                        <span>Order Tercatat</span>
+                    </div>
+                </div>
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-600 to-blue-600 text-white flex items-center justify-center shadow-lg shadow-indigo-600/25 shrink-0">
+                    <i data-lucide="receipt" class="w-6 h-6"></i>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
+                <div class="space-y-1">
+                    <p class="text-[10.5px] font-extrabold text-slate-400 uppercase tracking-wider">Member Pelanggan</p>
+                    <h3 class="text-xl sm:text-2xl font-black text-slate-900 group-hover:text-emerald-600 transition"><?= $stat_pel['jml_pel'] ?> <span class="text-xs font-semibold text-slate-400">User</span></h3>
+                    <div class="inline-flex items-center gap-1 text-[10px] text-emerald-600 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-full">
+                        <i data-lucide="users" class="w-3 h-3"></i>
+                        <span>Aktif Terdaftar</span>
+                    </div>
+                </div>
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-500 text-white flex items-center justify-center shadow-lg shadow-emerald-500/25 shrink-0">
+                    <i data-lucide="users" class="w-6 h-6"></i>
+                </div>
+            </div>
+
+            <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
+                <div class="space-y-1">
+                    <p class="text-[10.5px] font-extrabold text-slate-400 uppercase tracking-wider">Stok Barang</p>
+                    <h3 class="text-xl sm:text-2xl font-black text-slate-900 group-hover:text-purple-600 transition"><?= $stat_prod['total_stok'] ?> <span class="text-xs font-semibold text-slate-400">Unit</span></h3>
+                    <div class="inline-flex items-center gap-1 text-[10px] text-purple-600 font-extrabold bg-purple-50 px-2 py-0.5 rounded-full">
+                        <i data-lucide="package-check" class="w-3 h-3"></i>
+                        <span>Inventori Siap</span>
+                    </div>
+                </div>
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-purple-600 to-fuchsia-600 text-white flex items-center justify-center shadow-lg shadow-purple-600/25 shrink-0">
+                    <i data-lucide="package-check" class="w-6 h-6"></i>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <!-- SECTION: PRODUK MALL & REKOMENDASI BELANJA (PERSIS SEPERTI GAMBAR SHOPEE MALL / SPAYLATER) -->
+        <div id="sectionKatalogMall" class="space-y-3">
+            <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+                <div class="flex items-center gap-2">
+                    <span class="w-2.5 h-5 bg-[#ee4d2d] rounded-sm"></span>
+                    <h2 class="font-black text-sm sm:text-base text-slate-800 tracking-tight">Katalog Produk TokoKita Mall</h2>
+                    <span class="text-[10px] font-extrabold bg-rose-50 text-[#ee4d2d] border border-rose-200 px-2 py-0.5 rounded-full">100% Original</span>
+                </div>
+                <a href="kategori.php" class="text-xs font-bold text-[#ee4d2d] hover:underline flex items-center gap-1">
+                    Lihat Semua Produk →
+                </a>
+            </div>
+
+            <!-- Grid 6 Kolom E-Commerce Modern Persis Gambar -->
+            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-3.5">
+                <?php 
+                mysqli_data_seek($q_katalog_mall, 0);
+                while ($pr = mysqli_fetch_assoc($q_katalog_mall)): 
+                    $foto_prod = !empty($pr['foto_url']) ? $pr['foto_url'] : getFotoProduk($pr['nama_produk']);
+                    $badge_prod = !empty($pr['badge']) ? $pr['badge'] : 'Mall | ORI';
+                    $promo_prod = !empty($pr['promo']) ? $pr['promo'] : 'PROMO XTRA';
+                    $is_habis   = $pr['stok'] <= 0;
+                ?>
+                <div class="card-mall-item group bg-white rounded-xl border border-slate-200/90 hover:border-[#ee4d2d]/60 shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-200 flex flex-col justify-between overflow-hidden relative"
+                     data-promo="<?= strtolower($promo_prod) ?>"
+                     data-kategori="<?= strtolower($pr['nama_kategori'] ?? '') ?>">
+
+                    <!-- Foto Produk (Persegi 1:1) -->
+                    <div class="relative aspect-square w-full bg-white overflow-hidden flex items-center justify-center p-2.5 sm:p-3 border-b border-slate-100">
+                        <img src="<?= htmlspecialchars($foto_prod) ?>" 
+                             alt="<?= htmlspecialchars($pr['nama_produk']) ?>"
+                             loading="lazy"
+                             onerror="this.src='https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?w=500&auto=format&fit=crop&q=80'"
+                             class="w-full h-full object-contain group-hover:scale-105 transition duration-300">
+
+                        <!-- Overlay Badge Kuning Bawah-Kiri (PROMO XTRA) -->
+                        <?php if (!empty($promo_prod)): ?>
+                        <div class="absolute bottom-1.5 left-1.5 flex items-center gap-1 pointer-events-none">
+                            <span class="bg-[#ffd428] text-amber-950 font-black text-[8px] sm:text-[8.5px] px-1.5 py-0.5 rounded shadow-sm tracking-tight leading-none uppercase">
+                                <?= htmlspecialchars($promo_prod) ?>
+                            </span>
+                        </div>
+                        <?php endif; ?>
+
+                        <!-- Tag Keaslian Atas-Kanan -->
+                        <div class="absolute top-1.5 right-1.5 pointer-events-none">
+                            <span class="bg-[#ee4d2d]/90 text-white font-black text-[8px] px-1 py-0.5 rounded shadow-sm tracking-wider uppercase">
+                                ORI
+                            </span>
+                        </div>
+                    </div>
+
+                    <!-- Deskripsi & Harga -->
+                    <div class="p-2 sm:p-2.5 flex flex-col flex-1 justify-between gap-1.5">
+                        <div>
+                            <h3 class="text-[11.5px] sm:text-xs font-semibold text-slate-800 line-clamp-2 leading-snug group-hover:text-[#ee4d2d] transition" 
+                                title="<?= htmlspecialchars($pr['nama_produk']) ?>">
+                                <span class="inline-block bg-[#ee4d2d] text-white font-black text-[8px] px-1 py-0.2 rounded mr-1 align-baseline tracking-wider uppercase">
+                                    <?= htmlspecialchars($badge_prod) ?>
+                                </span>
+                                <?= htmlspecialchars($pr['nama_produk']) ?>
+                            </h3>
+                        </div>
+
+                        <div class="pt-1 border-t border-slate-100 flex flex-col gap-1">
+                            <div class="flex items-baseline gap-0.5 text-[#ee4d2d]">
+                                <span class="text-[10px] font-bold">Rp</span>
+                                <span class="text-sm sm:text-base font-black tracking-tight leading-none"><?= number_format($pr['harga'], 0, ',', '.') ?></span>
+                            </div>
+
+                            <div class="flex items-center justify-between text-[9.5px] text-slate-400 font-medium">
+                                <span class="truncate max-w-[80px]"><?= htmlspecialchars($pr['nama_kategori'] ?? 'Umum') ?></span>
+                                <span class="<?= $is_habis ? 'text-rose-500 font-bold' : ($pr['stok'] <= 10 ? 'text-amber-600 font-bold' : 'text-slate-500') ?>">
+                                    <?= $is_habis ? 'Habis' : 'Stok ' . $pr['stok'] ?>
+                                </span>
+                            </div>
+
+                            <!-- Tombol Beli / Masuk Keranjang Express -->
+                            <?php if ($is_habis): ?>
+                                <button type="button" disabled class="w-full bg-slate-200 text-slate-400 text-[10.5px] font-bold py-1.5 rounded-lg cursor-not-allowed">
+                                    Stok Habis
+                                </button>
+                            <?php else: ?>
+                                <form method="POST" class="mt-0.5">
+                                    <input type="hidden" name="id_produk" value="<?= $pr['id_produk'] ?>">
+                                    <input type="hidden" name="jumlah" value="1">
+                                    <button type="submit" name="masuk_keranjang" 
+                                        class="w-full bg-[#ee4d2d] hover:bg-[#d73211] active:scale-95 text-white font-black text-[10.5px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 shadow-sm shadow-[#ee4d2d]/25">
+                                        <i data-lucide="shopping-cart" class="w-3 h-3"></i>
+                                        <span>+ Keranjang</span>
+                                    </button>
+                                </form>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                </div>
+                <?php endwhile; ?>
+            </div>
+        </div>
+
+        <?php if ($is_role_pelanggan): ?>
+        <!-- Riwayat Pesanan Belanja Saya (Khusus Akun Pelanggan, TANPA Status Member Orang Lain) -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80 space-y-3">
+            <div class="border-b border-slate-100 pb-2.5 flex items-center justify-between">
+                <div>
+                    <h2 class="font-black text-xs sm:text-sm text-slate-800 flex items-center gap-1.5">
+                        <i data-lucide="clock" class="w-4 h-4 text-[#ee4d2d]"></i>
+                        Pesanan Belanja Terakhir Saya
+                    </h2>
+                    <p class="text-[10.5px] text-slate-400">Riwayat transaksi belanja pribadi akun <?= htmlspecialchars($nama_user_login) ?></p>
+                </div>
+                <span class="text-[10px] font-extrabold bg-rose-50 text-[#ee4d2d] px-2.5 py-0.5 rounded-full border border-rose-200/60">
+                    Akun Pembeli
+                </span>
+            </div>
+
+            <?php if ($q_riwayat_saya && mysqli_num_rows($q_riwayat_saya) > 0): ?>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse text-xs">
+                    <thead>
+                        <tr class="bg-slate-50/80 text-slate-400 uppercase tracking-wider text-[10px] font-extrabold border-b border-slate-200">
+                            <th class="p-3">No Transaksi</th>
+                            <th class="p-3">Tanggal</th>
+                            <th class="p-3">Total Pembayaran</th>
+                            <th class="p-3 text-center">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        <?php while ($trx = mysqli_fetch_assoc($q_riwayat_saya)): ?>
+                        <tr class="hover:bg-slate-50/80 transition">
+                            <td class="p-3 font-mono font-bold text-indigo-600">#TRX-<?= str_pad($trx['id_transaksi'], 4, '0', STR_PAD_LEFT) ?></td>
+                            <td class="p-3 font-medium text-slate-600"><?= $trx['tanggal'] ?></td>
+                            <td class="p-3 font-black text-emerald-600"><?= rupiah($trx['total_belanja']) ?></td>
+                            <td class="p-3 text-center">
+                                <span class="px-2.5 py-0.5 text-[10px] rounded-full font-black bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    Selesai
+                                </span>
+                            </td>
+                        </tr>
+                        <?php endwhile; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php else: ?>
+            <div class="py-6 text-center text-xs text-slate-400">
+                <p>Belum ada riwayat pesanan belanja. Silakan pilih produk dari katalog di atas!</p>
+            </div>
+            <?php endif; ?>
+        </div>
+
+        <?php else: ?>
         <!-- Form Stored Procedure Khusus Administrator & Kasir POS -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <form method="POST" class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
-                <div class="flex items-center gap-2 border-b pb-3">
-                    <i data-lucide="user-plus" class="w-5 h-5 text-indigo-600"></i>
-                    <h2 class="font-bold text-slate-800">Tambah Pelanggan (`CALL TambahPelanggan`)</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+            <form method="POST" class="bg-white p-5 sm:p-6 rounded-3xl shadow-sm border border-slate-200/80 space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="user-plus" class="w-5 h-5 text-indigo-600"></i>
+                        <h2 class="font-black text-sm text-slate-800">Tambah Pelanggan Baru</h2>
+                    </div>
+                    <span class="text-[10px] font-extrabold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md">Stored Procedure</span>
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <input type="text" name="nama_pelanggan" placeholder="Nama Pelanggan" required class="border border-slate-200 p-2.5 rounded-xl text-sm">
-                    <input type="text" name="kota" placeholder="Kota (mis: Ponorogo)" required class="border border-slate-200 p-2.5 rounded-xl text-sm">
+                    <input type="text" name="nama_pelanggan" placeholder="Nama Pelanggan" required class="border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500">
+                    <input type="text" name="kota" placeholder="Kota (mis: Ponorogo)" required class="border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500">
                 </div>
-                <button type="submit" name="tambah_pelanggan" class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold py-2.5 px-4 rounded-xl w-full transition">
-                    Simpan Pelanggan Baru
+                <button type="submit" name="tambah_pelanggan" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black py-3 px-4 rounded-2xl transition shadow-lg shadow-indigo-600/25 active:scale-95">
+                    Simpan Pelanggan Baru (`CALL TambahPelanggan`)
                 </button>
             </form>
 
-            <form method="POST" class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
-                <div class="flex items-center gap-2 border-b pb-3">
-                    <i data-lucide="shopping-cart" class="w-5 h-5 text-emerald-600"></i>
-                    <h2 class="font-bold text-slate-800">Transaksi Kasir (`CALL sp_TambahTransaksiBaru`)</h2>
+            <form method="POST" class="bg-white p-5 sm:p-6 rounded-3xl shadow-sm border border-slate-200/80 space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="shopping-cart" class="w-5 h-5 text-emerald-600"></i>
+                        <h2 class="font-black text-sm text-slate-800">Transaksi Kasir Cepat</h2>
+                    </div>
+                    <span class="text-[10px] font-extrabold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md">Trigger Auto-Stok</span>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
-                    <select name="id_pelanggan" required class="border border-slate-200 p-2.5 rounded-xl text-sm">
+                    <select name="id_pelanggan" required class="border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
                         <?php 
                         $q_pel = mysqli_query($conn, "SELECT * FROM view_pelanggan");
                         while ($p = mysqli_fetch_assoc($q_pel)): ?>
                             <option value="<?= $p['id_pelanggan'] ?>"><?= $p['nama_pelanggan'] ?> (<?= $p['kota'] ?>)</option>
                         <?php endwhile; ?>
                     </select>
-                    <select name="id_produk" required class="border border-slate-200 p-2.5 rounded-xl text-sm">
-                        <?php while ($pr = mysqli_fetch_assoc($q_produk)): ?>
+                    <select name="id_produk" required class="border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-indigo-500">
+                        <?php 
+                        mysqli_data_seek($q_produk_opt, 0);
+                        while ($pr = mysqli_fetch_assoc($q_produk_opt)): ?>
                             <option value="<?= $pr['id_produk'] ?>"><?= $pr['nama_produk'] ?> (Stok: <?= $pr['stok'] ?>)</option>
                         <?php endwhile; ?>
                     </select>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
-                    <input type="number" name="jumlah" value="1" min="1" placeholder="Jumlah" required class="border border-slate-200 p-2.5 rounded-xl text-sm">
-                    <input type="number" name="diskon" value="0" min="0" max="100" placeholder="Diskon (%)" class="border border-slate-200 p-2.5 rounded-xl text-sm">
+                    <input type="number" name="jumlah" value="1" min="1" placeholder="Jumlah" required class="border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500">
+                    <input type="number" name="diskon" value="0" min="0" max="100" placeholder="Diskon (%)" class="border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500">
                 </div>
-                <button type="submit" name="tambah_transaksi" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold py-2.5 px-4 rounded-xl w-full transition">
+                <button type="submit" name="tambah_transaksi" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black py-3 px-4 rounded-2xl transition shadow-lg shadow-emerald-600/25 active:scale-95">
                     Proses Transaksi & Potong Stok Otomatis
                 </button>
             </form>
         </div>
-        <?php endif; ?>
 
-        <!-- Tabel View Total Belanja & Function -->
-        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-            <h2 class="font-bold text-base mb-4 flex items-center gap-2">
-                <i data-lucide="award" class="w-5 h-5 text-amber-500"></i>
-                Rekapitulasi Belanja Pelanggan (`view_total_belanja` + Function `KategoriBelanja` & `HitungPajak`)
-            </h2>
+        <!-- Tabel View Total Belanja & Function (Hanya Muncul untuk Administrator & Kasir POS) -->
+        <div class="bg-white p-5 sm:p-6 rounded-3xl shadow-sm border border-slate-200/80 space-y-4">
+            <div class="border-b border-slate-100 pb-3 flex items-center justify-between">
+                <div>
+                    <h2 class="font-black text-sm text-slate-800 flex items-center gap-2">
+                        <i data-lucide="award" class="w-4 h-4 text-amber-500"></i>
+                        Rekapitulasi Belanja Member TokoKita
+                    </h2>
+                    <p class="text-[11px] text-slate-400">Integrasi <code>view_total_belanja</code> + Function <code>KategoriBelanja</code> & <code>HitungPajak</code></p>
+                </div>
+                <span class="text-[10px] font-extrabold bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-full border border-indigo-200/60">
+                    Akses Khusus Admin & Kasir
+                </span>
+            </div>
+            
             <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse text-sm">
+                <table class="w-full text-left border-collapse text-xs">
                     <thead>
-                        <tr class="bg-slate-100 text-slate-600">
-                            <th class="p-3 border-b">ID</th>
-                            <th class="p-3 border-b">Nama Pelanggan</th>
-                            <th class="p-3 border-b">Frekuensi</th>
-                            <th class="p-3 border-b">Total Belanja</th>
-                            <th class="p-3 border-b">PPN 11% (Function)</th>
-                            <th class="p-3 border-b">Status Member (Function)</th>
+                        <tr class="bg-slate-50/80 text-slate-400 uppercase tracking-wider text-[10px] font-extrabold border-b border-slate-200">
+                            <th class="p-3.5">ID</th>
+                            <th class="p-3.5">Nama Pelanggan</th>
+                            <th class="p-3.5">Frekuensi</th>
+                            <th class="p-3.5">Total Belanja</th>
+                            <th class="p-3.5">PPN 11% (Function)</th>
+                            <th class="p-3.5 text-center">Status Member (Function)</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody class="divide-y divide-slate-100">
                         <?php while ($row = mysqli_fetch_assoc($q_rekap)): ?>
-                        <tr class="hover:bg-slate-50 border-b">
-                            <td class="p-3">#<?= $row['id_pelanggan'] ?></td>
-                            <td class="p-3 font-semibold"><?= $row['nama_pelanggan'] ?></td>
-                            <td class="p-3"><?= $row['total_transaksi'] ?>x Transaksi</td>
-                            <td class="p-3 font-bold text-slate-800">Rp <?= number_format($row['total_belanja'], 0, ',', '.') ?></td>
-                            <td class="p-3 text-slate-500">Rp <?= number_format($row['estimasi_ppn'], 0, ',', '.') ?></td>
-                            <td class="p-3">
-                                <span class="px-3 py-1 text-xs rounded-full font-bold
-                                    <?= $row['kategori'] == 'Pelanggan Gold' ? 'bg-amber-100 text-amber-800' : ($row['kategori'] == 'Pelanggan Silver' ? 'bg-slate-200 text-slate-800' : 'bg-blue-100 text-blue-700') ?>">
+                        <tr class="hover:bg-slate-50/80 transition">
+                            <td class="p-3.5 font-mono font-bold text-indigo-600">#<?= $row['id_pelanggan'] ?></td>
+                            <td class="p-3.5 font-bold text-slate-800"><?= htmlspecialchars($row['nama_pelanggan']) ?></td>
+                            <td class="p-3.5 font-semibold text-slate-500"><?= $row['total_transaksi'] ?>x Transaksi</td>
+                            <td class="p-3.5 font-black text-emerald-600 text-xs"><?= rupiah($row['total_belanja']) ?></td>
+                            <td class="p-3.5 text-slate-400 font-medium"><?= rupiah($row['estimasi_ppn']) ?></td>
+                            <td class="p-3.5 text-center">
+                                <span class="px-2.5 py-1 text-[10px] rounded-full font-black border
+                                    <?= $row['kategori'] == 'Pelanggan Gold' ? 'bg-amber-100 text-amber-800 border-amber-300' : ($row['kategori'] == 'Pelanggan Silver' ? 'bg-slate-200 text-slate-700 border-slate-300' : 'bg-indigo-50 text-indigo-700 border-indigo-200') ?>">
                                     <?= $row['kategori'] ?>
                                 </span>
                             </td>
@@ -302,56 +655,11 @@ $q_audit  = mysqli_query($conn, "SELECT * FROM tbl_log ORDER BY id_log DESC LIMI
                 </table>
             </div>
         </div>
-
-        <!-- 3 Kolom Bawah: View Transaksi, Subquery, & Trigger Log -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-                <h3 class="font-bold text-sm mb-3 text-slate-700">Riwayat Transaksi (`view_transaksi_pelanggan`)</h3>
-                <table class="w-full text-xs">
-                    <thead><tr class="bg-slate-100"><th class="p-2 text-left">Tanggal</th><th class="p-2 text-left">Pelanggan</th><th class="p-2 text-right">Total</th></tr></thead>
-                    <tbody>
-                        <?php while ($tr = mysqli_fetch_assoc($q_transaksi)): ?>
-                        <tr class="border-b"><td class="p-2"><?= $tr['tanggal'] ?></td><td class="p-2"><?= $tr['nama_pelanggan'] ?></td><td class="p-2 text-right font-semibold">Rp<?= number_format($tr['total_belanja'], 0, ',', '.') ?></td></tr>
-                        <?php endwhile; ?>
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-                <h3 class="font-bold text-sm mb-3 text-slate-700">Transaksi Di Atas Rata-Rata (`Subquery AVG`)</h3>
-                <table class="w-full text-xs">
-                    <thead><tr class="bg-slate-100"><th class="p-2 text-left">ID</th><th class="p-2 text-left">Pelanggan</th><th class="p-2 text-right">Nominal</th></tr></thead>
-                    <tbody>
-                        <?php while ($sq = mysqli_fetch_assoc($q_subquery)): ?>
-                        <tr class="border-b"><td class="p-2">#<?= $sq['id_transaksi'] ?></td><td class="p-2"><?= $sq['nama_pelanggan'] ?></td><td class="p-2 text-right font-bold text-emerald-600">Rp<?= number_format($sq['total_belanja'], 0, ',', '.') ?></td></tr>
-                        <?php endwhile; ?>
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-                <h3 class="font-bold text-sm mb-3 text-slate-700">Log Aktivitas Otomatis (`Trigger Database`)</h3>
-                <table class="w-full text-xs mb-3">
-                    <thead><tr class="bg-slate-100"><th class="p-2 text-left">Aksi Pelanggan</th><th class="p-2 text-right">Waktu</th></tr></thead>
-                    <tbody>
-                        <?php while ($lg = mysqli_fetch_assoc($q_log)): ?>
-                        <tr class="border-b"><td class="p-2 font-mono text-indigo-600"><?= $lg['aktivitas'] ?> (ID: <?= $lg['id_pelanggan'] ?>)</td><td class="p-2 text-right text-slate-400"><?= $lg['waktu'] ?></td></tr>
-                        <?php endwhile; ?>
-                    </tbody>
-                </table>
-                <table class="w-full text-xs">
-                    <thead><tr class="bg-slate-100"><th class="p-2 text-left">Log Potong Stok</th><th class="p-2 text-right">Waktu</th></tr></thead>
-                    <tbody>
-                        <?php while ($au = mysqli_fetch_assoc($q_audit)): ?>
-                        <tr class="border-b"><td class="p-2"><?= $au['keterangan'] ?></td><td class="p-2 text-right text-slate-400"><?= $au['waktu'] ?></td></tr>
-                        <?php endwhile; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        <?php endif; ?>
 
     </main>
 
+    <script src="script.js"></script>
     <script>lucide.createIcons();</script>
 </body>
 </html>
