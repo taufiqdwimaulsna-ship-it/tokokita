@@ -27,13 +27,17 @@ if (isset($_POST['update_pelanggan'])) {
     }
 }
 
-// 3. Hapus Pelanggan (Memicu Trigger after_delete_pelanggan di Bab 5)
+// 3. Hapus Pelanggan (Khusus Hak Akses Administrator)
 if (isset($_GET['hapus'])) {
-    $id = (int)$_GET['hapus'];
-    if (mysqli_query($conn, "DELETE FROM tbl_pelanggan WHERE id_pelanggan=$id")) {
-        $notif_sukses = "Pelanggan #$id berhasil dihapus (Trigger after_delete_pelanggan tercatat)!";
+    if (!isAdmin()) {
+        $notif_error = "Akses Ditolak: Kasir tidak diizinkan menghapus data pelanggan! Fitur hapus pelanggan hanya untuk Administrator.";
     } else {
-        $notif_error = "Pelanggan tidak dapat dihapus karena sudah memiliki riwayat transaksi.";
+        $id = (int)$_GET['hapus'];
+        if (mysqli_query($conn, "DELETE FROM tbl_pelanggan WHERE id_pelanggan=$id")) {
+            $notif_sukses = "Pelanggan #$id berhasil dihapus oleh Administrator (Trigger after_delete_pelanggan tercatat)!";
+        } else {
+            $notif_error = "Pelanggan tidak dapat dihapus karena sudah memiliki riwayat transaksi.";
+        }
     }
 }
 
@@ -140,9 +144,13 @@ $q_log_ubah = mysqli_query($conn, "SELECT * FROM log_perubahan_pelanggan ORDER B
                                         <?= $p['kategori'] ?>
                                     </span>
                                 </td>
-                                <td class="p-2.5 text-right">
+                                <td class="p-2.5 text-right whitespace-nowrap">
                                     <a href="pesanan_saya.php?id_pelanggan=<?= $p['id_pelanggan'] ?>" class="text-indigo-600 hover:underline text-xs font-semibold mr-2">Pesanan</a>
-                                    <a href="?hapus=<?= $p['id_pelanggan'] ?>" onclick="return confirm('Hapus pelanggan ini?')" class="text-rose-600 hover:underline text-xs font-semibold">Hapus</a>
+                                    <?php if (isAdmin()): ?>
+                                        <a href="?hapus=<?= $p['id_pelanggan'] ?>" onclick="return confirm('Hapus pelanggan <?= htmlspecialchars($p['nama_pelanggan']) ?>?')" class="text-rose-600 hover:underline text-xs font-semibold">Hapus</a>
+                                    <?php else: ?>
+                                        <span class="text-slate-400 text-xs italic">Kasir: No Delete</span>
+                                    <?php endif; ?>
                                 </td>
                             </tr>
                             <?php endwhile; ?>

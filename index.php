@@ -23,13 +23,19 @@ if (isset($_POST['masuk_keranjang'])) {
     $prod  = mysqli_fetch_assoc($q_cek);
 
     if ($prod) {
-        if ($jumlah > $prod['stok']) {
-            $notif_error = "Stok tidak mencukupi! Stok {$prod['nama_produk']} tersisa {$prod['stok']} unit.";
+        $current_in_cart = isset($_SESSION['keranjang'][$id_produk]) ? (int)$_SESSION['keranjang'][$id_produk]['jumlah'] : 0;
+        $total_diminta   = $current_in_cart + $jumlah;
+
+        if ($prod['stok'] <= 0) {
+            $notif_error = "Maaf, stok produk '{$prod['nama_produk']}' saat ini sudah habis!";
+        } elseif ($total_diminta > $prod['stok']) {
+            $sisa_bisa = max(0, $prod['stok'] - $current_in_cart);
+            $notif_error = "Tidak bisa menambah barang! Stok '{$prod['nama_produk']}' tersisa {$prod['stok']} unit. " .
+                           ($current_in_cart > 0 ? "(Sudah ada $current_in_cart unit di keranjang, maksimal hanya bisa tambah $sisa_bisa unit lagi)." : "");
         } else {
             if (isset($_SESSION['keranjang'][$id_produk])) {
-                $_SESSION['keranjang'][$id_produk]['jumlah'] += $jumlah;
-                $jml_baru = $_SESSION['keranjang'][$id_produk]['jumlah'];
-                $res_sub  = mysqli_fetch_assoc(mysqli_query($conn, "SELECT HitungTotal({$prod['harga']}, $jml_baru) AS sub"));
+                $_SESSION['keranjang'][$id_produk]['jumlah'] = $total_diminta;
+                $res_sub  = mysqli_fetch_assoc(mysqli_query($conn, "SELECT HitungTotal({$prod['harga']}, $total_diminta) AS sub"));
                 $_SESSION['keranjang'][$id_produk]['subtotal'] = $res_sub['sub'];
             } else {
                 $_SESSION['keranjang'][$id_produk] = [
@@ -40,7 +46,7 @@ if (isset($_POST['masuk_keranjang'])) {
                     'subtotal'    => $prod['subtotal']
                 ];
             }
-            $notif_sukses = "{$prod['nama_produk']} berhasil ditambahkan ke Keranjang Belanja!";
+            $notif_sukses = "{$prod['nama_produk']} ($jumlah unit) berhasil ditambahkan ke Keranjang Belanja!";
         }
     }
 }
@@ -81,6 +87,7 @@ $nama_user_login   = isset($_SESSION['nama_lengkap']) ? $_SESSION['nama_lengkap'
 $id_pel_saya = 0;
 $stat_saya = ['total_trx' => 0, 'total_belanja' => 0];
 $q_riwayat_saya = null;
+$data_pel_saya = null;
 
 if ($is_role_pelanggan) {
     $escaped_nama = mysqli_real_escape_string($conn, $nama_user_login);
@@ -89,12 +96,40 @@ if ($is_role_pelanggan) {
         $id_pel_saya = (int)$r_pel['id_pelanggan'];
     }
 
+    // 4. Update / Simpan Alamat Pengiriman Sendiri oleh Pelanggan Sebelum Membuat Pesanan
+    if (isset($_POST['simpan_alamat_pelanggan']) && $id_pel_saya > 0) {
+        $alamat_baru = mysqli_real_escape_string($conn, trim($_POST['alamat']));
+        $telp_baru   = mysqli_real_escape_string($conn, trim($_POST['no_telepon']));
+        $kota_baru   = mysqli_real_escape_string($conn, trim($_POST['kota']));
+
+        if (!empty($alamat_baru)) {
+            $up_addr = mysqli_query($conn, "UPDATE tbl_pelanggan SET alamat = '$alamat_baru', no_telepon = '$telp_baru', kota = '$kota_baru' WHERE id_pelanggan = $id_pel_saya");
+            if ($up_addr) {
+                $notif_sukses = "Alamat pengiriman Anda berhasil disimpan! Pesanan yang Anda buat akan otomatis dikirimkan ke alamat ini.";
+            } else {
+                $notif_error = "Gagal memperbarui alamat: " . mysqli_error($conn);
+            }
+        } else {
+            $notif_error = "Alamat pengiriman tidak boleh kosong!";
+        }
+    }
+
+    $saldo_member_saya = 0;
     if ($id_pel_saya > 0) {
         $q_sum_saya = mysqli_query($conn, "SELECT COUNT(*) AS total_trx, COALESCE(SUM(total_belanja),0) AS total_belanja FROM tbl_transaksi WHERE id_pelanggan = $id_pel_saya");
         if ($r_ss = mysqli_fetch_assoc($q_sum_saya)) {
             $stat_saya = $r_ss;
         }
+        $q_sal_saya = mysqli_query($conn, "SELECT COALESCE(SUM(nominal), 0) AS total_saldo FROM tbl_topup WHERE id_pelanggan = $id_pel_saya");
+        if ($r_sl = mysqli_fetch_assoc($q_sal_saya)) {
+            $saldo_member_saya = (float)$r_sl['total_saldo'];
+        }
         $q_riwayat_saya = mysqli_query($conn, "SELECT * FROM tbl_transaksi WHERE id_pelanggan = $id_pel_saya ORDER BY id_transaksi DESC LIMIT 5");
+
+        $qp_detail = mysqli_query($conn, "SELECT * FROM tbl_pelanggan WHERE id_pelanggan = $id_pel_saya LIMIT 1");
+        if ($qp_detail && mysqli_num_rows($qp_detail) > 0) {
+            $data_pel_saya = mysqli_fetch_assoc($qp_detail);
+        }
     }
 }
 
@@ -290,10 +325,10 @@ $jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjan
                 <div class="space-y-0.5">
                     <p class="text-[10px] sm:text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Akun Pembeli</p>
                     <h3 class="text-base sm:text-lg font-black text-slate-900 group-hover:text-indigo-600 transition truncate max-w-[130px] sm:max-w-[160px]"><?= htmlspecialchars($nama_user_login) ?></h3>
-                    <div class="inline-flex items-center gap-1 text-[10px] text-indigo-600 font-extrabold bg-indigo-50 px-2 py-0.5 rounded-full">
-                        <i data-lucide="badge-check" class="w-3 h-3"></i>
-                        <span>Pelanggan Mall</span>
-                    </div>
+                    <a href="profil.php" class="inline-flex items-center gap-1 text-[10px] text-indigo-600 font-extrabold bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded-full transition border border-indigo-200" title="Buka Profil Saya">
+                        <i data-lucide="user" class="w-3 h-3"></i>
+                        <span>Profil Saya →</span>
+                    </a>
                 </div>
                 <div class="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-md shadow-indigo-600/20 shrink-0">
                     <i data-lucide="user-check" class="w-5 h-5"></i>
@@ -316,12 +351,12 @@ $jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjan
 
             <div class="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm flex items-center justify-between group">
                 <div class="space-y-0.5">
-                    <p class="text-[10px] sm:text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Total Belanja Saya</p>
-                    <h3 class="text-base sm:text-xl font-black text-slate-900 group-hover:text-amber-600 transition"><?= rupiah($stat_saya['total_belanja']) ?></h3>
-                    <div class="inline-flex items-center gap-1 text-[10px] text-amber-600 font-extrabold bg-amber-50 px-2 py-0.5 rounded-full">
-                        <i data-lucide="wallet" class="w-3 h-3"></i>
-                        <span>Pengeluaran Anda</span>
-                    </div>
+                    <p class="text-[10px] sm:text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">Saldo Member Saya</p>
+                    <h3 class="text-base sm:text-xl font-black text-slate-900 group-hover:text-amber-600 transition"><?= rupiah($saldo_member_saya) ?></h3>
+                    <a href="saldo.php" class="inline-flex items-center gap-1 text-[10px] text-emerald-700 font-extrabold bg-emerald-50 hover:bg-emerald-100 px-2.5 py-0.5 rounded-full transition border border-emerald-200 shadow-sm">
+                        <i data-lucide="plus-circle" class="w-3 h-3 text-emerald-600"></i>
+                        <span>Isi Saldo Member →</span>
+                    </a>
                 </div>
                 <div class="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20 shrink-0">
                     <i data-lucide="wallet" class="w-5 h-5"></i>
@@ -341,6 +376,98 @@ $jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjan
                     <i data-lucide="shopping-cart" class="w-5 h-5"></i>
                 </div>
             </div>
+        </div>
+
+        <!-- Panel Alamat Pengiriman Pelanggan (Sebelum Membuat Pesanan) -->
+        <div class="bg-gradient-to-r from-orange-50 via-white to-rose-50 border border-orange-200/80 p-4 sm:p-5 rounded-3xl shadow-sm space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-orange-100 pb-3">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#ee4d2d] to-amber-500 text-white flex items-center justify-center shadow-md shadow-[#ee4d2d]/20 shrink-0">
+                        <i data-lucide="map-pin" class="w-5 h-5"></i>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h3 class="text-sm font-black text-slate-800">Alamat Pengiriman Saya</h3>
+                            <span class="text-[9.5px] bg-[#ee4d2d] text-white font-black px-2 py-0.5 rounded-full uppercase tracking-wider">
+                                <?= !empty($data_pel_saya['alamat']) ? 'Alamat Tersimpan' : 'Belum Diatur' ?>
+                            </span>
+                        </div>
+                        <p class="text-[11px] text-slate-500">Masukkan alamat pengiriman Anda sendiri sebelum membuat pesanan di TokoKita Mall</p>
+                    </div>
+                </div>
+
+                <button type="button" onclick="toggleFormAlamatDashboard()" id="btnToggleAlamat"
+                    class="bg-white hover:bg-slate-50 text-[#ee4d2d] border border-orange-300 font-extrabold text-xs px-3.5 py-2 rounded-xl transition shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer">
+                    <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
+                    <span><?= !empty($data_pel_saya['alamat']) ? 'Ubah Alamat Pengiriman' : '+ Masukkan Alamat Sendiri' ?></span>
+                </button>
+            </div>
+
+            <!-- Tampilan Ringkas Alamat Saat Ini -->
+            <div id="boxAlamatRingkas" class="<?= empty($data_pel_saya['alamat']) ? 'hidden' : '' ?> bg-white/80 p-3.5 rounded-2xl border border-orange-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div class="space-y-1 max-w-2xl">
+                    <p class="font-extrabold text-slate-900 flex items-center gap-2">
+                        <span class="text-indigo-950 font-black text-xs"><?= htmlspecialchars($data_pel_saya['nama_pelanggan'] ?? $nama_user_login) ?></span>
+                        <span class="text-slate-300">|</span>
+                        <span class="text-slate-600 font-bold"><?= htmlspecialchars($data_pel_saya['no_telepon'] ?? '-') ?></span>
+                        <span class="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.2 rounded border border-emerald-200">Alamat Utama</span>
+                    </p>
+                    <p class="text-slate-700 leading-relaxed font-medium">
+                        <?= htmlspecialchars($data_pel_saya['alamat'] ?? 'Belum ada alamat') ?>, <span class="font-bold text-slate-900"><?= htmlspecialchars($data_pel_saya['kota'] ?? '') ?></span>
+                    </p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <a href="kategori.php" class="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs px-3.5 py-2 rounded-xl transition shadow-md shadow-indigo-600/20 flex items-center gap-1.5">
+                        <i data-lucide="store" class="w-3.5 h-3.5"></i> Buka Katalog Produk
+                    </a>
+                    <a href="keranjang.php" class="bg-[#ee4d2d] hover:bg-[#d73211] text-white font-extrabold text-xs px-4 py-2 rounded-xl transition shadow-md shadow-[#ee4d2d]/25 flex items-center gap-1.5">
+                        <i data-lucide="shopping-bag" class="w-3.5 h-3.5"></i> Buat Pesanan
+                    </a>
+                </div>
+            </div>
+
+            <!-- Form Edit / Masukkan Alamat Sendiri -->
+            <form method="POST" id="formAlamatDashboard" class="<?= !empty($data_pel_saya['alamat']) ? 'hidden' : '' ?> bg-white p-4.5 rounded-2xl border border-orange-200/90 space-y-3">
+                <input type="hidden" name="id_pelanggan" value="<?= $id_pel_saya ?>">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <h4 class="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                        <i data-lucide="home" class="w-4 h-4 text-[#ee4d2d]"></i>
+                        <span>Masukkan Alamat Pengiriman Anda Sendiri</span>
+                    </h4>
+                    <span class="text-[10px] text-slate-400">Pastikan alamat jelas agar kurir mengantar pesanan tepat waktu</span>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-bold text-slate-700 mb-1">No. Handphone / WhatsApp Penerima:</label>
+                        <input type="text" name="no_telepon" value="<?= htmlspecialchars($data_pel_saya['no_telepon'] ?? '') ?>" required placeholder="Contoh: 0812-3456-7890"
+                            class="w-full border border-slate-300 bg-slate-50 focus:bg-white p-2.5 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#ee4d2d]">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-bold text-slate-700 mb-1">Kota / Kabupaten & Provinsi:</label>
+                        <input type="text" name="kota" value="<?= htmlspecialchars($data_pel_saya['kota'] ?? 'Ponorogo') ?>" required placeholder="Contoh: Ponorogo, Jawa Timur"
+                            class="w-full border border-slate-300 bg-slate-50 focus:bg-white p-2.5 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#ee4d2d]">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-[11px] font-bold text-slate-700 mb-1">Alamat Lengkap (Nama Jalan, No. Rumah, RT/RW, Kelurahan, Kecamatan):</label>
+                    <textarea name="alamat" rows="2" required placeholder="Tuliskan nama jalan, nomor rumah, RT/RW, kelurahan, dan kecamatan Anda sendiri..."
+                        class="w-full border border-slate-300 bg-slate-50 focus:bg-white p-2.5 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#ee4d2d] leading-relaxed"><?= htmlspecialchars($data_pel_saya['alamat'] ?? '') ?></textarea>
+                </div>
+
+                <div class="flex items-center justify-end gap-2 pt-1">
+                    <?php if (!empty($data_pel_saya['alamat'])): ?>
+                    <button type="button" onclick="toggleFormAlamatDashboard()" class="text-xs font-bold text-slate-500 hover:text-slate-800 px-3 py-2 cursor-pointer">
+                        Batal
+                    </button>
+                    <?php endif; ?>
+                    <button type="submit" name="simpan_alamat_pelanggan" 
+                        class="bg-[#ee4d2d] hover:bg-[#d73211] text-white font-black text-xs px-5 py-2.5 rounded-xl transition shadow-lg shadow-[#ee4d2d]/30 flex items-center gap-1.5 active:scale-95 cursor-pointer">
+                        <i data-lucide="check" class="w-4 h-4"></i> Simpan Alamat Pengiriman Saya
+                    </button>
+                </div>
+            </form>
         </div>
         <?php else: ?>
         <!-- Stat Cards Khusus Administrator & Kasir POS -->
@@ -425,6 +552,8 @@ $jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjan
                     $badge_prod = !empty($pr['badge']) ? $pr['badge'] : 'Mall | ORI';
                     $promo_prod = !empty($pr['promo']) ? $pr['promo'] : 'PROMO XTRA';
                     $is_habis   = $pr['stok'] <= 0;
+                    $jumlah_di_keranjang = isset($_SESSION['keranjang'][$pr['id_produk']]) ? (int)$_SESSION['keranjang'][$pr['id_produk']]['jumlah'] : 0;
+                    $sisa_dapat_ditambah = max(0, (int)$pr['stok'] - $jumlah_di_keranjang);
                 ?>
                 <div class="card-mall-item group bg-white rounded-xl border border-slate-200/90 hover:border-[#ee4d2d]/60 shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-200 flex flex-col justify-between overflow-hidden relative"
                      data-promo="<?= strtolower($promo_prod) ?>"
@@ -481,19 +610,23 @@ $jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjan
                             </div>
 
                             <!-- Tombol Beli / Masuk Keranjang Express -->
-                            <?php if ($is_habis): ?>
+                            <?php if ($is_habis || $sisa_dapat_ditambah <= 0): ?>
                                 <button type="button" disabled class="w-full bg-slate-200 text-slate-400 text-[10.5px] font-bold py-1.5 rounded-lg cursor-not-allowed">
-                                    Stok Habis
+                                    <?= $is_habis ? 'Stok Habis' : 'Batas di Keranjang' ?>
                                 </button>
                             <?php else: ?>
                                 <form method="POST" class="mt-0.5">
                                     <input type="hidden" name="id_produk" value="<?= $pr['id_produk'] ?>">
-                                    <input type="hidden" name="jumlah" value="1">
-                                    <button type="submit" name="masuk_keranjang" 
-                                        class="w-full bg-[#ee4d2d] hover:bg-[#d73211] active:scale-95 text-white font-black text-[10.5px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 shadow-sm shadow-[#ee4d2d]/25">
-                                        <i data-lucide="shopping-cart" class="w-3 h-3"></i>
-                                        <span>+ Keranjang</span>
-                                    </button>
+                                    <div class="flex items-center gap-1">
+                                        <input type="number" name="jumlah" value="1" min="1" max="<?= $sisa_dapat_ditambah ?>" required
+                                            aria-label="Jumlah <?= htmlspecialchars($pr['nama_produk'], ENT_QUOTES, 'UTF-8') ?>"
+                                            class="w-12 border border-slate-200 rounded-lg p-1.5 text-xs text-center font-bold focus:outline-none focus:ring-2 focus:ring-[#ee4d2d]">
+                                        <button type="submit" name="masuk_keranjang"
+                                            class="flex-1 bg-[#ee4d2d] hover:bg-[#d73211] active:scale-95 text-white font-black text-[10.5px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 shadow-sm shadow-[#ee4d2d]/25">
+                                            <i data-lucide="shopping-cart" class="w-3 h-3"></i>
+                                            <span>+ Keranjang</span>
+                                        </button>
+                                    </div>
                                 </form>
                             <?php endif; ?>
                         </div>
@@ -660,6 +793,23 @@ $jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjan
     </main>
 
     <script src="script.js"></script>
-    <script>lucide.createIcons();</script>
+    <script>
+        lucide.createIcons();
+
+        function toggleFormAlamatDashboard() {
+            const form = document.getElementById('formAlamatDashboard');
+            const box = document.getElementById('boxAlamatRingkas');
+            if (form) {
+                form.classList.toggle('hidden');
+            }
+            if (box && form) {
+                if (!form.classList.contains('hidden')) {
+                    box.classList.add('hidden');
+                } else {
+                    box.classList.remove('hidden');
+                }
+            }
+        }
+    </script>
 </body>
 </html>

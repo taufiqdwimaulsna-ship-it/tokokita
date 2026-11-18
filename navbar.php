@@ -42,6 +42,8 @@ if (!function_exists('navItem')) {
 $user_nama = isset($_SESSION['nama_lengkap']) ? $_SESSION['nama_lengkap'] : 'User';
 $user_role = isset($_SESSION['role']) ? $_SESSION['role'] : 'Kasir POS';
 $is_pelanggan = function_exists('isPelanggan') ? isPelanggan() : (strtolower(trim($user_role)) === 'pelanggan' || strtolower(trim($user_role)) === 'customer');
+$is_kasir     = function_exists('isKasir') ? isKasir() : (strtolower(trim($user_role)) === 'kasir' || strtolower(trim($user_role)) === 'kasir pos');
+$is_admin     = function_exists('isAdmin') ? isAdmin() : (!$is_pelanggan && !$is_kasir);
 ?>
 <!-- Google Font: Plus Jakarta Sans -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -125,21 +127,21 @@ $is_pelanggan = function_exists('isPelanggan') ? isPelanggan() : (strtolower(tri
                     <span id="jamDigitalNavbar">--:--:-- WIB</span>
                 </div>
 
-                <!-- User Badge -->
-                <div class="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-2.5 py-1 rounded-xl text-xs shadow-sm">
+                <!-- User Badge / Link Profil -->
+                <a href="profil.php" class="flex items-center gap-2 bg-slate-900/80 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 px-2.5 py-1 rounded-xl text-xs shadow-sm transition group" title="Buka Profil Saya">
                     <div class="relative">
-                        <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex items-center justify-center font-black text-xs shadow-md shadow-indigo-600/30">
+                        <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex items-center justify-center font-black text-xs shadow-md shadow-indigo-600/30 group-hover:scale-105 transition">
                             <?= strtoupper(substr($user_nama, 0, 1)) ?>
                         </div>
                         <span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-slate-900"></span>
                     </div>
                     <div class="text-left hidden sm:block">
-                        <p class="font-bold text-slate-200 text-xs leading-none truncate max-w-[120px]"><?= htmlspecialchars($user_nama) ?></p>
-                        <span class="text-[9px] font-extrabold uppercase tracking-wide <?= $is_pelanggan ? 'text-amber-400' : 'text-indigo-300' ?>">
+                        <p class="font-bold text-slate-200 text-xs leading-none truncate max-w-[120px] group-hover:text-indigo-200 transition"><?= htmlspecialchars($user_nama) ?></p>
+                        <span class="text-[9px] font-extrabold uppercase tracking-wide <?= $is_pelanggan ? 'text-amber-400' : ($is_kasir ? 'text-emerald-400' : 'text-indigo-300') ?>">
                             <?= htmlspecialchars($user_role) ?>
                         </span>
                     </div>
-                </div>
+                </a>
 
                 <!-- Tombol Logout -->
                 <a href="logout.php" onclick="return confirm('Keluar dari sistem TokoKita?')" 
@@ -150,10 +152,10 @@ $is_pelanggan = function_exists('isPelanggan') ? isPelanggan() : (strtolower(tri
             </div>
         </div>
 
-        <!-- Baris 2: Navigasi Menu Horizontal (Dashboard, Katalog, Keranjang untuk Pelanggan; Menu Lengkap POS untuk Kasir/Admin) -->
+        <!-- Baris 2: Navigasi Menu Horizontal -->
         <div class="relative flex items-center pt-2 gap-1.5 w-full">
-            <?php if (!$is_pelanggan): ?>
-                <!-- Tombol Scroll Kiri (Khusus Admin/Kasir dengan 14 Menu) -->
+            <?php if ($is_admin): ?>
+                <!-- Tombol Scroll Kiri (Khusus Administrator dengan 15 Menu) -->
                 <button type="button" onclick="scrollNavToko('left')" id="btnNavScrollKiri"
                     class="bg-slate-900 hover:bg-[#ee4d2d] text-slate-300 hover:text-white p-2 rounded-xl border border-slate-700 hover:border-[#ee4d2d] shadow-lg transition-all duration-200 shrink-0 active:scale-75 flex items-center justify-center z-20 cursor-pointer" 
                     title="Geser menu ke kiri">
@@ -164,12 +166,21 @@ $is_pelanggan = function_exists('isPelanggan') ? isPelanggan() : (strtolower(tri
             <!-- Navigasi Menu Horizontal -->
             <nav id="menuNavTokoKita" class="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto scroll-smooth custom-scrollbar py-0.5">
                 <?php if ($is_pelanggan): ?>
-                    <!-- HAK AKSES KHUSUS PELANGGAN: HANYA DASHBOARD, KATALOG, DAN KERANJANG -->
+                    <!-- HAK AKSES KHUSUS PELANGGAN: DASHBOARD, KATALOG, KERANJANG, ISI SALDO, DAN PROFIL -->
                     <?= navItem('index.php', 'Dashboard Belanja', 'layout-dashboard', $aktif) ?>
                     <?= navItem('kategori.php', 'Katalog Produk', 'store', $aktif) ?>
                     <?= navItem('keranjang.php', 'Keranjang Belanja', 'shopping-cart', $aktif, $jml_keranjang_nav) ?>
+                    <?= navItem('saldo.php', 'Isi Saldo Member', 'wallet', $aktif) ?>
+                    <?= navItem('profil.php', 'Profil Saya', 'user', $aktif) ?>
+                <?php elseif ($is_kasir): ?>
+                    <!-- HAK AKSES KHUSUS KASIR POS: DASHBOARD, SCANNER, PRODUK, MEMBER PELANGGAN, PROFIL -->
+                    <?= navItem('dashboard.php', 'Dashboard', 'layout-dashboard', $aktif) ?>
+                    <?= navItem('kasir_pos.php', 'Scanner', 'scan-barcode', $aktif) ?>
+                    <?= navItem('admin_produk.php', 'Produk', 'package', $aktif) ?>
+                    <?= navItem('pelanggan.php', 'Member Pelanggan', 'users', $aktif) ?>
+                    <?= navItem('profil.php', 'Profil', 'user', $aktif) ?>
                 <?php else: ?>
-                    <!-- HAK AKSES LENGKAP KASIR POS & ADMINISTRATOR (14 Menu Utama) -->
+                    <!-- HAK AKSES LENGKAP ADMINISTRATOR (15 Menu Utama) -->
                     <?= navItem('dashboard.php', 'Dashboard', 'layout-dashboard', $aktif) ?>
                     <?= navItem('kasir_pos.php', 'Scanner Barcode POS', 'scan-barcode', $aktif) ?>
                     <?= navItem('kasir_pesanan.php', 'Antrean', 'clock', $aktif) ?>
@@ -177,6 +188,7 @@ $is_pelanggan = function_exists('isPelanggan') ? isPelanggan() : (strtolower(tri
                     <?= navItem('struk.php', 'Struk 58mm', 'receipt', $aktif) ?>
                     <?= navItem('admin_produk.php', 'Produk SKU', 'package', $aktif) ?>
                     <?= navItem('kategori.php', 'Kategori', 'layers', $aktif) ?>
+                    <?= navItem('pelanggan.php', 'Member Pelanggan', 'users', $aktif) ?>
                     <?= navItem('saldo.php', 'Dompet Saldo', 'wallet-cards', $aktif) ?>
                     <?= navItem('diskon.php', 'Diskon', 'percent', $aktif) ?>
                     <?= navItem('favorit.php', 'Favorit', 'heart', $aktif) ?>
@@ -187,8 +199,8 @@ $is_pelanggan = function_exists('isPelanggan') ? isPelanggan() : (strtolower(tri
                 <?php endif; ?>
             </nav>
 
-            <?php if (!$is_pelanggan): ?>
-                <!-- Tombol Scroll Kanan (Khusus Admin/Kasir dengan 14 Menu) -->
+            <?php if ($is_admin): ?>
+                <!-- Tombol Scroll Kanan (Khusus Administrator dengan 15 Menu) -->
                 <button type="button" onclick="scrollNavToko('right')" id="btnNavScrollKanan"
                     class="bg-slate-900 hover:bg-[#ee4d2d] text-slate-300 hover:text-white p-2 rounded-xl border border-slate-700 hover:border-[#ee4d2d] shadow-lg transition-all duration-200 shrink-0 active:scale-75 flex items-center justify-center z-20 cursor-pointer" 
                     title="Geser menu ke kanan">

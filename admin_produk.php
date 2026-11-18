@@ -3,6 +3,33 @@ require_once 'functions.php';
 batasiAksesPelanggan();
 
 $notif = "";
+$is_error = false;
+
+// Hapus Produk - Khusus Hak Akses Administrator (Kasir Dilarang Menghapus)
+if (isset($_GET['hapus'])) {
+    if (!isAdmin()) {
+        $notif = "Akses Ditolak: Kasir tidak diizinkan menghapus barang inventori! Hak menghapus produk hanya dimiliki oleh Administrator.";
+        $is_error = true;
+    } else {
+        $id_hapus = (int)$_GET['hapus'];
+        // Cek apakah produk sudah tercatat pada detail transaksi
+        $cek_trx = mysqli_query($conn, "SELECT COUNT(*) AS c FROM tbl_detail_transaksi WHERE id_produk = $id_hapus");
+        $r_trx = mysqli_fetch_assoc($cek_trx);
+        if ($r_trx && $r_trx['c'] > 0) {
+            $notif = "Produk #$id_hapus tidak dapat dihapus karena sudah memiliki riwayat transaksi penjualan!";
+            $is_error = true;
+        } else {
+            mysqli_query($conn, "DELETE FROM tbl_favorit WHERE id_produk = $id_hapus");
+            if (mysqli_query($conn, "DELETE FROM tbl_produk WHERE id_produk = $id_hapus")) {
+                $notif = "Produk #$id_hapus berhasil dihapus permanen oleh Administrator!";
+                mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_produk', 'HAPUS PRODUK', 'Admin menghapus produk ID #$id_hapus')");
+            } else {
+                $notif = "Gagal menghapus produk: " . mysqli_error($conn);
+                $is_error = true;
+            }
+        }
+    }
+}
 
 if (isset($_POST['tambah'])) {
     $id_kat  = (int)$_POST['id_kategori'];
@@ -83,21 +110,26 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
         
         <!-- Notifikasi -->
         <?php if ($notif): ?>
-            <div class="bg-emerald-50 border border-emerald-300 text-emerald-800 px-4 py-3 rounded-2xl text-xs font-semibold flex items-center justify-between shadow-sm">
+            <div class="<?= $is_error ? 'bg-rose-50 border border-rose-300 text-rose-800' : 'bg-emerald-50 border border-emerald-300 text-emerald-800' ?> px-4 py-3 rounded-2xl text-xs font-semibold flex items-center justify-between shadow-sm">
                 <div class="flex items-center gap-2">
-                    <i data-lucide="check-circle" class="w-4 h-4 text-emerald-600"></i>
+                    <i data-lucide="<?= $is_error ? 'alert-triangle' : 'check-circle' ?>" class="w-4 h-4 <?= $is_error ? 'text-rose-600' : 'text-emerald-600' ?>"></i>
                     <span><?= $notif ?></span>
                 </div>
-                <button onclick="this.parentElement.remove()" class="text-emerald-600 hover:text-emerald-800"><i data-lucide="x" class="w-4 h-4"></i></button>
+                <button onclick="this.parentElement.remove()" class="<?= $is_error ? 'text-rose-600 hover:text-rose-800' : 'text-emerald-600 hover:text-emerald-800' ?>"><i data-lucide="x" class="w-4 h-4"></i></button>
             </div>
         <?php endif; ?>
 
         <!-- Form Tambah Produk Baru -->
         <div class="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-sm space-y-4">
-            <div class="flex items-center justify-between border-b border-slate-100 pb-3">
-                <h2 class="font-bold text-sm text-slate-800 flex items-center gap-2">
-                    <i data-lucide="package-plus" class="w-4 h-4 text-indigo-600"></i> Tambah Master Produk Baru
-                </h2>
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div class="flex flex-wrap items-center gap-2.5">
+                    <h2 class="font-bold text-sm text-slate-800 flex items-center gap-2">
+                        <i data-lucide="package-plus" class="w-4 h-4 text-indigo-600"></i> Tambah Master Produk Baru
+                    </h2>
+                    <span class="text-[10px] font-bold px-2.5 py-0.5 rounded-full border <?= isAdmin() ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-amber-50 text-amber-700 border-amber-200' ?>">
+                        <?= isAdmin() ? 'Akses: Administrator (Bisa Tambah & Hapus)' : 'Akses: Kasir POS (Bisa Tambah, Dilarang Hapus)' ?>
+                    </span>
+                </div>
                 <div class="flex items-center gap-3 text-xs text-slate-400">
                     <span>Total SKU: <strong class="text-slate-700"><?= $stat_p['total_sku'] ?></strong></span>
                     <span>Total Stok: <strong class="text-emerald-600"><?= number_format($stat_p['total_unit']) ?> Unit</strong></span>
@@ -205,9 +237,19 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                                 </form>
                             </td>
                             <td class="p-3.5 text-slate-400 font-semibold"><?= rupiah($p['pajak']) ?></td>
-                            <td class="p-3.5 text-center space-x-1.5">
-                                <a href="detail_produk.php?id=<?= $p['id_produk'] ?>" class="text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded-lg font-bold transition">Detail</a>
-                                <a href="?fav=<?= $p['id_produk'] ?>" class="text-rose-500 hover:bg-rose-50 px-2 py-1 rounded-lg font-bold transition" title="Tambah Favorit">♥ Favorit</a>
+                            <td class="p-3.5 text-center space-x-1 whitespace-nowrap">
+                                <a href="detail_produk.php?id=<?= $p['id_produk'] ?>" class="text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded-lg font-bold transition text-xs">Detail</a>
+                                <a href="?fav=<?= $p['id_produk'] ?>" class="text-rose-500 hover:bg-rose-50 px-2 py-1 rounded-lg font-bold transition text-xs" title="Tambah Favorit">♥ Favorit</a>
+                                <?php if (isAdmin()): ?>
+                                    <a href="?hapus=<?= $p['id_produk'] ?>" onclick="return confirm('Apakah Anda yakin ingin menghapus produk <?= htmlspecialchars($p['nama_produk']) ?> secara permanen?')" 
+                                       class="text-rose-600 hover:text-white hover:bg-rose-600 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-lg font-bold transition text-xs inline-flex items-center gap-1">
+                                        <i data-lucide="trash-2" class="w-3 h-3"></i> Hapus
+                                    </a>
+                                <?php else: ?>
+                                    <span class="text-slate-400 bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg font-bold text-[10px] inline-flex items-center gap-1 cursor-not-allowed select-none" title="Kasir dilarang menghapus barang inventori">
+                                        <i data-lucide="lock" class="w-2.5 h-2.5 text-slate-400"></i> Hapus (Khusus Admin)
+                                    </span>
+                                <?php endif; ?>
                             </td>
                         </tr>
                         <?php endwhile; ?>

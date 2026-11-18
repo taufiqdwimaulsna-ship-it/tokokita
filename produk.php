@@ -29,13 +29,17 @@ if (isset($_POST['edit_produk'])) {
     $notif_sukses = "Data produk #$id_p berhasil diperbarui!";
 }
 
-// Hapus Produk
+// Hapus Produk - Khusus Administrator (Kasir Dilarang Menghapus)
 if (isset($_GET['hapus'])) {
-    $id_p = (int)$_GET['hapus'];
-    if (mysqli_query($conn, "DELETE FROM tbl_produk WHERE id_produk=$id_p")) {
-        $notif_sukses = "Produk berhasil dihapus!";
+    if (!isAdmin()) {
+        $notif_error = "Akses Ditolak: Kasir tidak diizinkan menghapus barang! Fitur hapus barang hanya untuk Administrator.";
     } else {
-        $notif_error = "Produk tidak bisa dihapus karena sudah tercatat pada detail transaksi.";
+        $id_p = (int)$_GET['hapus'];
+        if (mysqli_query($conn, "DELETE FROM tbl_produk WHERE id_produk=$id_p")) {
+            $notif_sukses = "Produk berhasil dihapus oleh Administrator!";
+        } else {
+            $notif_error = "Produk tidak bisa dihapus karena sudah tercatat pada detail transaksi.";
+        }
     }
 }
 
@@ -120,8 +124,12 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori");
                             </td>
                             <td class="p-3 text-slate-600">Rp <?= number_format($pr['ppn_11'], 0, ',', '.') ?></td>
                             <td class="p-3 text-amber-700 font-medium">Rp <?= number_format($pr['diskon_10'], 0, ',', '.') ?></td>
-                            <td class="p-3 text-right">
-                                <a href="?hapus=<?= $pr['id_produk'] ?>" onclick="return confirm('Hapus produk ini?')" class="text-rose-600 hover:underline text-xs font-semibold">Hapus</a>
+                            <td class="p-3 text-right whitespace-nowrap">
+                                <?php if (isAdmin()): ?>
+                                    <a href="?hapus=<?= $pr['id_produk'] ?>" onclick="return confirm('Hapus produk <?= htmlspecialchars($pr['nama_produk']) ?>?')" class="text-rose-600 hover:underline text-xs font-semibold">Hapus</a>
+                                <?php else: ?>
+                                    <span class="text-slate-400 text-xs italic">Kasir: No Delete</span>
+                                <?php endif; ?>
                             </td>
                         </tr>
                         <?php endwhile; ?>

@@ -4,37 +4,45 @@
  * File: saldo.php
  */
 require_once 'functions.php';
-batasiAksesPelanggan();
+cekLogin();
 
 $notif = "";
 $error = "";
 
-// Ambil daftar pelanggan untuk dropdown pilihan member
-$q_pelanggan = mysqli_query($conn, "SELECT * FROM view_pelanggan ORDER BY nama_pelanggan ASC");
-$list_pelanggan = mysqli_fetch_all($q_pelanggan, MYSQLI_ASSOC);
+// Ambil daftar pelanggan untuk dropdown pilihan member (Khusus Kasir & Admin)
+$list_pelanggan = [];
+if (!isPelanggan()) {
+    $q_pelanggan = mysqli_query($conn, "SELECT * FROM view_pelanggan ORDER BY nama_pelanggan ASC");
+    $list_pelanggan = mysqli_fetch_all($q_pelanggan, MYSQLI_ASSOC);
+}
 
 // Tentukan ID Pelanggan aktif
-$id_pel_aktif = isset($_GET['id_pelanggan']) ? (int)$_GET['id_pelanggan'] : 0;
-if ($id_pel_aktif === 0 && !empty($list_pelanggan)) {
-    // Coba cocokkan dengan nama login jika role Pelanggan
-    $found = false;
-    foreach ($list_pelanggan as $lp) {
-        if (strcasecmp($lp['nama_pelanggan'], $_SESSION['nama_lengkap']) === 0) {
-            $id_pel_aktif = (int)$lp['id_pelanggan'];
-            $found = true;
-            break;
+$id_pel_aktif = 0;
+if (isPelanggan()) {
+    // Kunci ID ke akun pelanggan yang sedang login (Pelanggan hanya mengisi saldonya sendiri)
+    $nama_user = mysqli_real_escape_string($conn, $_SESSION['nama_lengkap']);
+    $qp_me = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan WHERE nama_pelanggan = '$nama_user' LIMIT 1");
+    if ($rp_me = mysqli_fetch_assoc($qp_me)) {
+        $id_pel_aktif = (int)$rp_me['id_pelanggan'];
+    }
+    if ($id_pel_aktif === 0) {
+        $qp_any = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan LIMIT 1");
+        if ($rp_any = mysqli_fetch_assoc($qp_any)) {
+            $id_pel_aktif = (int)$rp_any['id_pelanggan'];
         }
     }
-    if (!$found) {
+} else {
+    $id_pel_aktif = isset($_GET['id_pelanggan']) ? (int)$_GET['id_pelanggan'] : 0;
+    if ($id_pel_aktif === 0 && !empty($list_pelanggan)) {
         $id_pel_aktif = (int)$list_pelanggan[0]['id_pelanggan'];
     }
 }
 
 // Proses Form Isi Saldo (Top-Up)
 if (isset($_POST['proses_topup'])) {
-    $id_pel = (int)$_POST['id_pelanggan'];
+    $id_pel  = isPelanggan() ? $id_pel_aktif : (int)$_POST['id_pelanggan'];
     $nominal = (float)$_POST['nominal'];
-    $metode = mysqli_real_escape_string($conn, $_POST['metode']);
+    $metode  = mysqli_real_escape_string($conn, $_POST['metode']);
 
     if ($nominal < 10000) {
         $error = "Minimal pengisian saldo adalah Rp 10.000!";
@@ -42,8 +50,9 @@ if (isset($_POST['proses_topup'])) {
         $q_insert = mysqli_query($conn, "INSERT INTO tbl_topup (id_pelanggan, nominal, metode, status) VALUES ($id_pel, $nominal, '$metode', 'Berhasil')");
         if ($q_insert) {
             $id_tp = mysqli_insert_id($conn);
-            mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_topup', 'TOPUP MEMBER', 'Pengisian saldo #TP-$id_tp pelanggan #$id_pel nominal $nominal via $metode')");
-            $notif = "Pengisian saldo sebesar " . rupiah($nominal) . " berhasil melalui $metode!";
+            $pelaku = isPelanggan() ? "Pelanggan {$_SESSION['nama_lengkap']}" : "Petugas Kasir/Admin";
+            mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_topup', 'TOPUP MEMBER', '$pelaku melakukan pengisian saldo #TP-$id_tp pelanggan #$id_pel nominal $nominal via $metode')");
+            $notif = "Pengisian saldo member sebesar " . rupiah($nominal) . " berhasil melalui $metode! Saldo langsung bertambah.";
             $id_pel_aktif = $id_pel;
         } else {
             $error = "Gagal memproses pengisian saldo: " . mysqli_error($conn);
@@ -77,8 +86,8 @@ $level_member = $row_belanja ? $row_belanja['level_member'] : 'Pelanggan Reguler
 $saldo_tersedia = $info_pel ? (float)$info_pel['total_topup'] : 0;
 
 // Riwayat Top-up Pelanggan Aktif atau Keseluruhan
-$filter_mode = isset($_GET['filter']) ? $_GET['filter'] : 'member';
-if ($filter_mode === 'all') {
+$filter_mode = isPelanggan() ? 'member' : (isset($_GET['filter']) ? $_GET['filter'] : 'member');
+if ($filter_mode === 'all' && !isPelanggan()) {
     $q_riwayat = mysqli_query($conn, "
         SELECT tp.*, p.nama_pelanggan, p.kota
         FROM tbl_topup tp
@@ -148,17 +157,27 @@ $stat_global = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(nomin
             </div>
 
             <!-- Pilih Member -->
-            <form method="GET" class="flex items-center gap-2">
-                <label class="text-xs font-bold text-slate-600 hidden sm:inline">Pilih Member:</label>
-                <select name="id_pelanggan" onchange="this.form.submit()" class="border border-slate-300 bg-slate-50 px-3 py-2 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                    <?php foreach ($list_pelanggan as $lp): ?>
-                        <option value="<?= $lp['id_pelanggan'] ?>" <?= $lp['id_pelanggan'] == $id_pel_aktif ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($lp['nama_pelanggan']) ?> (<?= htmlspecialchars($lp['kota']) ?>)
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-                <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_mode) ?>">
-            </form>
+            <?php if (isPelanggan()): ?>
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-bold text-slate-500">Akun Member:</span>
+                    <span class="bg-indigo-50 border border-indigo-200 text-indigo-700 font-extrabold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 shadow-sm">
+                        <i data-lucide="user-check" class="w-3.5 h-3.5 text-indigo-600"></i>
+                        <?= htmlspecialchars($_SESSION['nama_lengkap']) ?>
+                    </span>
+                </div>
+            <?php else: ?>
+                <form method="GET" class="flex items-center gap-2">
+                    <label class="text-xs font-bold text-slate-600 hidden sm:inline">Pilih Member:</label>
+                    <select name="id_pelanggan" onchange="this.form.submit()" class="border border-slate-300 bg-slate-50 px-3 py-2 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <?php foreach ($list_pelanggan as $lp): ?>
+                            <option value="<?= $lp['id_pelanggan'] ?>" <?= $lp['id_pelanggan'] == $id_pel_aktif ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($lp['nama_pelanggan']) ?> (<?= htmlspecialchars($lp['kota']) ?>)
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <input type="hidden" name="filter" value="<?= htmlspecialchars($filter_mode) ?>">
+                </form>
+            <?php endif; ?>
         </div>
 
         <!-- Kartu Saldo & Ringkasan -->
@@ -226,7 +245,37 @@ $stat_global = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(nomin
                 </div>
             </div>
 
-            <!-- Kartu Global TokoKita System -->
+            <!-- Kartu Info Saldo TokoKita Pay -->
+            <?php if (isPelanggan()): ?>
+            <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                <div>
+                    <h3 class="font-bold text-sm text-slate-700 mb-3 flex items-center gap-2">
+                        <i data-lucide="sparkles" class="w-4 h-4 text-amber-500"></i> Keuntungan Saldo TokoKita Pay
+                    </h3>
+                    <div class="space-y-2.5 text-xs text-slate-600">
+                        <div class="flex items-start gap-2">
+                            <i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500 shrink-0 mt-0.5"></i>
+                            <span>Bebas biaya admin untuk belanja semua produk katalog Mall.</span>
+                        </div>
+                        <div class="flex items-start gap-2">
+                            <i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500 shrink-0 mt-0.5"></i>
+                            <span>Checkout instan 1-klik tanpa antre verifikasi manual.</span>
+                        </div>
+                        <div class="flex items-start gap-2">
+                            <i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500 shrink-0 mt-0.5"></i>
+                            <span>Meningkatkan loyalitas member ke tingkatan Silver / Gold.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="pt-4 border-t border-slate-100 flex items-center justify-between text-xs">
+                    <a href="keranjang.php" class="text-[#ee4d2d] font-bold hover:underline flex items-center gap-1">
+                        <i data-lucide="shopping-bag" class="w-3.5 h-3.5"></i> Buka Keranjang Belanja →
+                    </a>
+                </div>
+            </div>
+            <?php else: ?>
+            <!-- Kartu Global TokoKita System (Khusus Kasir & Admin) -->
             <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-between">
                 <div>
                     <h3 class="font-bold text-sm text-slate-700 mb-3 flex items-center gap-2">
@@ -246,6 +295,7 @@ $stat_global = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(nomin
                     <a href="aktivitas.php" class="text-slate-400 hover:text-slate-600">Audit Log</a>
                 </div>
             </div>
+            <?php endif; ?>
 
         </div>
 
@@ -263,14 +313,22 @@ $stat_global = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(nomin
 
                 <form method="POST" class="space-y-4">
                     <div>
-                        <label class="block text-xs font-bold text-slate-600 mb-1">Penerima Top-Up</label>
-                        <select name="id_pelanggan" required class="w-full border border-slate-300 p-2.5 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                            <?php foreach ($list_pelanggan as $lp): ?>
-                                <option value="<?= $lp['id_pelanggan'] ?>" <?= $lp['id_pelanggan'] == $id_pel_aktif ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($lp['nama_pelanggan']) ?> (<?= htmlspecialchars($lp['kota']) ?>)
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
+                        <label class="block text-xs font-bold text-slate-600 mb-1">Penerima Top-Up Saldo:</label>
+                        <?php if (isPelanggan()): ?>
+                            <input type="hidden" name="id_pelanggan" value="<?= $id_pel_aktif ?>">
+                            <div class="bg-indigo-50 border border-indigo-200 p-2.5 rounded-xl text-xs font-bold text-indigo-950 flex items-center justify-between">
+                                <span><?= htmlspecialchars($_SESSION['nama_lengkap']) ?></span>
+                                <span class="text-[9px] bg-indigo-600 text-white font-extrabold px-2 py-0.5 rounded uppercase">Akun Member Saya</span>
+                            </div>
+                        <?php else: ?>
+                            <select name="id_pelanggan" required class="w-full border border-slate-300 p-2.5 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <?php foreach ($list_pelanggan as $lp): ?>
+                                    <option value="<?= $lp['id_pelanggan'] ?>" <?= $lp['id_pelanggan'] == $id_pel_aktif ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($lp['nama_pelanggan']) ?> (<?= htmlspecialchars($lp['kota']) ?>)
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php endif; ?>
                     </div>
 
                     <!-- Preset Nominal Cepat -->
@@ -324,6 +382,7 @@ $stat_global = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(nomin
                     </div>
 
                     <!-- Filter Mode -->
+                    <?php if (!isPelanggan()): ?>
                     <div class="flex items-center gap-2">
                         <a href="saldo.php?id_pelanggan=<?= $id_pel_aktif ?>&filter=member" class="px-3 py-1.5 rounded-xl text-xs font-bold transition <?= $filter_mode === 'member' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200' ?>">
                             Member Ini
@@ -332,6 +391,11 @@ $stat_global = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(nomin
                             Semua Member
                         </a>
                     </div>
+                    <?php else: ?>
+                    <span class="bg-indigo-50 text-indigo-700 border border-indigo-200 px-3 py-1 rounded-xl text-xs font-bold">
+                        Riwayat Akun Saya
+                    </span>
+                    <?php endif; ?>
                 </div>
 
                 <!-- Input Pencarian Cepat JS -->

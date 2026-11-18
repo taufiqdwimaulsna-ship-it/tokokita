@@ -8,6 +8,13 @@
 require_once 'functions.php';
 cekLogin();
 
+// Pembatasan Hak Akses: Pelanggan TIDAK BISA mencetak struk kasir! Hak cetak struk khusus Kasir POS & Administrator.
+if (isPelanggan()) {
+    $_SESSION['pesan_akses'] = "Akses Ditolak: Pelanggan tidak memiliki izin untuk mencetak struk kasir! Fitur cetak struk thermal khusus Kasir POS dan Admin.";
+    header("Location: index.php");
+    exit;
+}
+
 // Mode Tampilan: 'tokokita' (data database riil) atau 'preset' (contoh persis seperti foto)
 $mode = isset($_GET['mode']) ? $_GET['mode'] : 'tokokita';
 
@@ -64,7 +71,7 @@ $total_belanja = $data_trx ? (float)$data_trx['total_belanja'] : 0;
 $ppn_nominal = (float)mysqli_fetch_assoc(mysqli_query($conn, "SELECT HitungPajak($total_belanja) AS ppn"))['ppn'];
 
 // Parameter Pembayaran & Kembalian
-$metode_bayar = isset($_GET['metode']) ? $_GET['metode'] : 'Tunai';
+$metode_bayar = isset($_GET['metode']) ? $_GET['metode'] : ($data_trx && !empty($data_trx['metode_pembayaran']) ? $data_trx['metode_pembayaran'] : 'Tunai');
 $uang_bayar = isset($_GET['bayar']) ? (float)$_GET['bayar'] : 0;
 
 if ($mode === 'preset') {
@@ -489,6 +496,18 @@ if ($lebar === '58') {
                     <span class="text-slate-600">Metode Bayar :</span>
                     <span id="textStrukMetode" class="font-bold text-slate-900"><?= htmlspecialchars($metode_bayar) ?></span>
                 </div>
+                <?php if (!empty($data_trx['ref_pembayaran'])): ?>
+                <div class="flex justify-between items-baseline text-[10px]">
+                    <span class="text-slate-500">Ref / No. Trx :</span>
+                    <span class="font-mono text-slate-700"><?= htmlspecialchars($data_trx['ref_pembayaran']) ?></span>
+                </div>
+                <?php endif; ?>
+                <?php if (!empty($data_trx['status_pembayaran'])): ?>
+                <div class="flex justify-between items-baseline text-[10px]">
+                    <span class="text-slate-500">Status Bayar :</span>
+                    <span class="font-bold <?= strpos($data_trx['status_pembayaran'], 'Lunas') !== false ? 'text-emerald-700' : 'text-amber-700' ?>"><?= htmlspecialchars($data_trx['status_pembayaran']) ?></span>
+                </div>
+                <?php endif; ?>
                 <div class="flex justify-between items-baseline">
                     <span class="text-slate-600">Bayar        :</span>
                     <span class="font-bold text-slate-900">Rp <span id="textStrukBayar"><?= number_format($uang_bayar, 0, ',', '.') ?></span></span>
@@ -505,9 +524,18 @@ if ($lebar === '58') {
                 <span class="text-right font-bold">Rp <?= number_format($ppn_nominal, 0, ',', '.') ?></span>
             </div>
 
-            <!-- Informasi Tambahan & Kasir -->
+            <!-- Informasi Tambahan, Pengiriman & Kasir -->
             <div class="space-y-0.5 text-[10px] mb-2">
                 <p class="truncate">Pelanggan: <?= htmlspecialchars($data_trx['nama_pelanggan'] ?? 'Pelanggan Umum') ?> (<?= htmlspecialchars($data_trx['kota'] ?? 'Ponorogo') ?>)</p>
+                <?php if (!empty($data_trx['no_telepon'])): ?>
+                    <p class="text-slate-700">Telp/WA: <?= htmlspecialchars($data_trx['no_telepon']) ?></p>
+                <?php endif; ?>
+                <?php if (!empty($data_trx['alamat_pengiriman'])): ?>
+                    <p class="text-slate-700 leading-tight">Kirim ke: <?= htmlspecialchars($data_trx['alamat_pengiriman']) ?></p>
+                <?php endif; ?>
+                <?php if (!empty($data_trx['catatan_pengiriman'])): ?>
+                    <p class="text-slate-500 italic">Catatan: "<?= htmlspecialchars($data_trx['catatan_pengiriman']) ?>"</p>
+                <?php endif; ?>
                 <p>Kasir: <?= htmlspecialchars($nama_kasir) ?></p>
             </div>
 

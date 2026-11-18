@@ -6,24 +6,42 @@ $notif = "";
 $error = "";
 $last_trx_id = 0;
 
-// Transaksi Instan 1 Klik via Stored Procedure sp_TambahTransaksiBaru
+// Transaksi Instan 1 Klik via Stored Procedure sp_TambahTransaksiBaru dengan Pengecekan Stok Ketat
 if (isset($_POST['bayar_instan'])) {
     $id_pel = (int)$_POST['id_pelanggan'];
     $id_prd = (int)$_POST['id_produk'];
-    $qty    = (int)$_POST['jumlah'];
+    $qty    = max(1, (int)$_POST['jumlah']);
     $disc   = (float)$_POST['diskon'];
 
-    if (mysqli_query($conn, "CALL sp_TambahTransaksiBaru($id_pel, $id_prd, $qty, $disc)")) {
-        while (mysqli_more_results($conn) && mysqli_next_result($conn)) {;}
-        
-        $q_last = mysqli_query($conn, "SELECT id_transaksi FROM tbl_transaksi ORDER BY id_transaksi DESC LIMIT 1");
-        if ($r_last = mysqli_fetch_assoc($q_last)) {
-            $last_trx_id = (int)$r_last['id_transaksi'];
-        }
+    // Cek Stok Produk Terkini (Mencegah Checkout Melebihi Stok)
+    $q_stk_pos = mysqli_query($conn, "SELECT nama_produk, stok FROM tbl_produk WHERE id_produk = $id_prd");
+    $r_stk_pos = mysqli_fetch_assoc($q_stk_pos);
 
-        $notif = "Transaksi Kasir POS Berhasil! Stok produk otomatis terpotong oleh Trigger Database.";
+    if (!$r_stk_pos) {
+        $error = "Produk tidak ditemukan dalam sistem!";
+    } elseif ($r_stk_pos['stok'] <= 0) {
+        $error = "Transaksi gagal: Stok '{$r_stk_pos['nama_produk']}' saat ini sudah habis (0 unit)!";
+    } elseif ($qty > $r_stk_pos['stok']) {
+        $error = "Transaksi ditolak! Jumlah yang diminta ($qty unit) melebihi stok yang tersedia ({$r_stk_pos['stok']} unit) untuk '{$r_stk_pos['nama_produk']}'!";
     } else {
-        $error = "Gagal memproses transaksi: " . mysqli_error($conn);
+        if (mysqli_query($conn, "CALL sp_TambahTransaksiBaru($id_pel, $id_prd, $qty, $disc)")) {
+            while (mysqli_more_results($conn) && mysqli_next_result($conn)) {;}
+            
+            $q_last = mysqli_query($conn, "SELECT id_transaksi FROM tbl_transaksi ORDER BY id_transaksi DESC LIMIT 1");
+            if ($r_last = mysqli_fetch_assoc($q_last)) {
+                $last_trx_id = (int)$r_last['id_transaksi'];
+            }
+
+            // Perbarui metode bayar transaksi sesuai pilihan kasir
+            if (isset($_POST['metode_pos'])) {
+                $metode_pos = mysqli_real_escape_string($conn, $_POST['metode_pos']);
+                mysqli_query($conn, "UPDATE tbl_transaksi SET metode_pembayaran = '$metode_pos' WHERE id_transaksi = $last_trx_id");
+            }
+
+            $notif = "Transaksi Kasir POS Berhasil! Stok produk '{$r_stk_pos['nama_produk']}' otomatis terpotong {$qty} unit oleh Trigger Database.";
+        } else {
+            $error = "Gagal memproses transaksi: " . mysqli_error($conn);
+        }
     }
 }
 

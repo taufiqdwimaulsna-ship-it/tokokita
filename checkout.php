@@ -10,48 +10,150 @@ $sukses_trx   = null;
 $error_trx    = "";
 $metode_bayar = "Tunai";
 $ref_barcode  = "";
+$nominal_bayar_input = "";
+$nominal_bayar = 0;
+$kembalian = 0;
 
 if (isset($_POST['bayar_sekarang']) && !empty($_SESSION['keranjang'])) {
-    $id_pelanggan = (int)$_POST['id_pelanggan'];
-    $diskon       = (float)$_POST['diskon_persen'];
-    $metode_bayar = isset($_POST['metode_bayar']) ? mysqli_real_escape_string($conn, $_POST['metode_bayar']) : 'Tunai';
-    $ref_barcode  = isset($_POST['ref_barcode']) ? mysqli_real_escape_string($conn, trim($_POST['ref_barcode'])) : '';
-
-    $subtotal = 0;
-    foreach ($_SESSION['keranjang'] as $it) {
-        $subtotal += $it['subtotal'];
+    // Kunci ID Pelanggan jika akun Pelanggan
+    if (isPelanggan()) {
+        $nama_me = mysqli_real_escape_string($conn, $_SESSION['nama_lengkap']);
+        $qp_me = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan WHERE nama_pelanggan = '$nama_me' LIMIT 1");
+        $rp_me = mysqli_fetch_assoc($qp_me);
+        $id_pelanggan = $rp_me ? (int)$rp_me['id_pelanggan'] : 1;
+    } else {
+        $id_pelanggan = (int)$_POST['id_pelanggan'];
     }
 
-    $q_hit = mysqli_fetch_assoc(mysqli_query($conn, "SELECT ($subtotal - HitungDiskon($subtotal, $diskon)) AS total_akhir"));
-    $total_akhir = $q_hit['total_akhir'];
+    $diskon            = (float)$_POST['diskon_persen'];
+    $metode_bayar      = isset($_POST['metode_bayar']) ? mysqli_real_escape_string($conn, $_POST['metode_bayar']) : 'Tunai';
+    $ref_barcode       = isset($_POST['ref_barcode']) ? mysqli_real_escape_string($conn, trim($_POST['ref_barcode'])) : '';
+    $nominal_bayar_input = isset($_POST['nominal_bayar']) ? trim((string)$_POST['nominal_bayar']) : '';
+    $alamat_pengiriman = isset($_POST['alamat_pengiriman']) ? mysqli_real_escape_string($conn, trim($_POST['alamat_pengiriman'])) : '';
+    $no_telepon        = isset($_POST['no_telepon']) ? mysqli_real_escape_string($conn, trim($_POST['no_telepon'])) : '';
+    $catatan_kirim     = isset($_POST['catatan_pengiriman']) ? mysqli_real_escape_string($conn, trim($_POST['catatan_pengiriman'])) : '';
 
-    mysqli_begin_transaction($conn);
-    $ok = mysqli_query($conn, "INSERT INTO tbl_transaksi (tanggal, id_pelanggan, total_belanja) VALUES (CURDATE(), $id_pelanggan, $total_akhir)");
-    $id_trx = mysqli_insert_id($conn);
-
+    // VALIDASI KETAT STOK BARANG SEBELUM CHECKOUT
+    $stok_aman = true;
     foreach ($_SESSION['keranjang'] as $it) {
-        $idp = $it['id_produk'];
-        $nmp = mysqli_real_escape_string($conn, $it['nama_produk']);
-        $jml = $it['jumlah'];
-        $hrg = $it['harga'];
-        if (!mysqli_query($conn, "INSERT INTO tbl_detail_transaksi (id_transaksi, id_produk, nama_produk, jumlah, harga) VALUES ($id_trx, $idp, '$nmp', $jml, $hrg)")) {
-            $ok = false;
+        $idp_chk = (int)$it['id_produk'];
+        $jml_chk = (int)$it['jumlah'];
+        $q_stk = mysqli_query($conn, "SELECT nama_produk, stok FROM tbl_produk WHERE id_produk = $idp_chk");
+        $r_stk = mysqli_fetch_assoc($q_stk);
+
+        if (!$r_stk) {
+            $error_trx = "Produk '{$it['nama_produk']}' tidak ditemukan dalam katalog!";
+            $stok_aman = false;
+            break;
+        }
+        if ($r_stk['stok'] <= 0) {
+            $error_trx = "Checkout gagal! Stok '{$r_stk['nama_produk']}' saat ini habis.";
+            $stok_aman = false;
+            break;
+        }
+        if ($jml_chk > $r_stk['stok']) {
+            $error_trx = "Checkout ditolak! Jumlah pesanan untuk '{$r_stk['nama_produk']}' ($jml_chk unit) melebihi stok yang tersedia ({$r_stk['stok']} unit).";
+            $stok_aman = false;
             break;
         }
     }
 
-    if ($ok) {
-        mysqli_commit($conn);
-        $sukses_trx = $id_trx;
-        $_SESSION['keranjang'] = [];
-
-        // Catat audit log jika menggunakan barcode/QRIS
-        if (!empty($ref_barcode)) {
-            mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_transaksi', 'BAYAR BARCODE', 'Transaksi #$id_trx dibayar via $metode_bayar Ref: $ref_barcode')");
+    if ($stok_aman) {
+        $subtotal = 0;
+        foreach ($_SESSION['keranjang'] as $it) {
+            $subtotal += $it['subtotal'];
         }
-    } else {
-        mysqli_rollback($conn);
-        $error_trx = "Transaksi gagal dan telah di-ROLLBACK otomatis!";
+
+        $q_hit = mysqli_fetch_assoc(mysqli_query($conn, "SELECT ($subtotal - HitungDiskon($subtotal, $diskon)) AS total_akhir"));
+        $total_akhir = $q_hit['total_akhir'];
+
+        // Validasi nominal tunai dan saldo sebelum membuat transaksi
+        $pembayaran_aman = true;
+        if ($metode_bayar === 'Tunai') {
+            $nominal_bayar = filter_var($nominal_bayar_input, FILTER_VALIDATE_INT);
+            if ($nominal_bayar === false) {
+                $error_trx = "Masukkan nominal pembayaran tunai dalam angka bulat.";
+                $pembayaran_aman = false;
+            } elseif ($nominal_bayar < $total_akhir) {
+                $error_trx = "Nominal pembayaran kurang dari total tagihan " . rupiah($total_akhir) . ".";
+                $pembayaran_aman = false;
+            } else {
+                $kembalian = $nominal_bayar - $total_akhir;
+            }
+        }
+
+        if (strpos($metode_bayar, 'Saldo') !== false) {
+            $q_sld = mysqli_query($conn, "SELECT COALESCE(SUM(nominal), 0) AS total_saldo FROM tbl_topup WHERE id_pelanggan = $id_pelanggan AND status = 'Berhasil'");
+            $r_sld = mysqli_fetch_assoc($q_sld);
+            $saldo_ada = $r_sld ? (float)$r_sld['total_saldo'] : 0;
+            if ($saldo_ada < $total_akhir) {
+                $error_trx = "Saldo Dompet TokoKita Pay tidak mencukupi! Saldo: " . rupiah($saldo_ada) . ", Total Tagihan: " . rupiah($total_akhir);
+                $pembayaran_aman = false;
+            }
+        }
+
+        if ($pembayaran_aman) {
+            // Generate kode referensi jika belum terisi oleh scanner
+            if (empty($ref_barcode)) {
+                if (strpos($metode_bayar, 'QRIS') !== false) {
+                    $ref_barcode = 'QRIS-' . date('Ymd') . '-' . rand(1000, 9999);
+                } elseif (strpos($metode_bayar, 'Shopee') !== false || strpos($metode_bayar, 'SPay') !== false) {
+                    $ref_barcode = 'SPL-' . date('Ymd') . '-' . rand(1000, 9999);
+                } elseif (strpos($metode_bayar, 'DANA') !== false) {
+                    $ref_barcode = 'DANA-' . date('Ymd') . '-' . rand(1000, 9999);
+                } elseif (strpos($metode_bayar, 'Saldo') !== false) {
+                    $ref_barcode = 'MBR-' . date('Ymd') . '-' . rand(1000, 9999);
+                } elseif (strpos($metode_bayar, 'BCA') !== false) {
+                    $ref_barcode = '89901' . rand(10000000, 99999999);
+                } elseif (strpos($metode_bayar, 'BRI') !== false) {
+                    $ref_barcode = '12800' . rand(10000000, 99999999);
+                } elseif (strpos($metode_bayar, 'COD') !== false) {
+                    $ref_barcode = 'COD-' . date('Ymd') . '-' . rand(1000, 9999);
+                } else {
+                    $ref_barcode = 'POS-' . date('Ymd') . '-' . rand(1000, 9999);
+                }
+            }
+
+            $status_bayar = (strpos($metode_bayar, 'COD') !== false) ? 'Menunggu Pembayaran' : 'Lunas';
+
+            mysqli_begin_transaction($conn);
+            $ok = mysqli_query($conn, "INSERT INTO tbl_transaksi (tanggal, id_pelanggan, total_belanja, metode_pembayaran, status_pembayaran, ref_pembayaran, alamat_pengiriman, no_telepon, catatan_pengiriman) VALUES (CURDATE(), $id_pelanggan, $total_akhir, '$metode_bayar', '$status_bayar', '$ref_barcode', '$alamat_pengiriman', '$no_telepon', '$catatan_kirim')");
+            $id_trx = mysqli_insert_id($conn);
+
+            $pesan_err_item = "";
+            foreach ($_SESSION['keranjang'] as $it) {
+                $idp = $it['id_produk'];
+                $nmp = mysqli_real_escape_string($conn, $it['nama_produk']);
+                $jml = (int)$it['jumlah'];
+                $hrg = (float)$it['harga'];
+                if (!mysqli_query($conn, "INSERT INTO tbl_detail_transaksi (id_transaksi, id_produk, nama_produk, jumlah, harga) VALUES ($id_trx, $idp, '$nmp', $jml, $hrg)")) {
+                    $ok = false;
+                    $pesan_err_item = mysqli_error($conn);
+                    break;
+                }
+            }
+
+            // Jika metode bayar Saldo Dompet TokoKita, kurangi saldo
+            if ($ok && strpos($metode_bayar, 'Saldo') !== false) {
+                $ins_potong = mysqli_query($conn, "INSERT INTO tbl_topup (id_pelanggan, nominal, metode, status) VALUES ($id_pelanggan, -$total_akhir, 'Pembayaran Belanja #$id_trx', 'Berhasil')");
+                if (!$ins_potong) {
+                    $ok = false;
+                    $pesan_err_item = "Gagal memotong saldo: " . mysqli_error($conn);
+                }
+            }
+
+            if ($ok) {
+                mysqli_commit($conn);
+                $sukses_trx = $id_trx;
+                $_SESSION['keranjang'] = [];
+
+                // Catat audit log transaksi
+                mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_transaksi', 'BAYAR TRX', 'Transaksi #$id_trx dibayar via $metode_bayar Ref: $ref_barcode')");
+            } else {
+                mysqli_rollback($conn);
+                $error_trx = "Transaksi gagal dan telah di-ROLLBACK otomatis! " . ($pesan_err_item ? $pesan_err_item : "Stok produk tidak mencukupi.");
+            }
+        }
     }
 }
 
@@ -59,16 +161,22 @@ $q_pel = mysqli_query($conn, "SELECT * FROM view_pelanggan ORDER BY nama_pelangg
 
 // Auto-select ID Pelanggan jika login sebagai Pelanggan
 $id_pel_login = 0;
+$alamat_profil_default = '';
+$telepon_profil_default = '';
 if (isPelanggan()) {
     $nama_user = mysqli_real_escape_string($conn, $_SESSION['nama_lengkap']);
-    $qp = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan WHERE nama_pelanggan = '$nama_user' LIMIT 1");
+    $qp = mysqli_query($conn, "SELECT * FROM tbl_pelanggan WHERE nama_pelanggan = '$nama_user' LIMIT 1");
     if ($rp = mysqli_fetch_assoc($qp)) {
         $id_pel_login = (int)$rp['id_pelanggan'];
+        $alamat_profil_default = $rp['alamat'] ?? '';
+        $telepon_profil_default = $rp['no_telepon'] ?? '';
     }
     if ($id_pel_login === 0) {
-        $qp_any = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan LIMIT 1");
+        $qp_any = mysqli_query($conn, "SELECT * FROM tbl_pelanggan LIMIT 1");
         if ($rp_any = mysqli_fetch_assoc($qp_any)) {
             $id_pel_login = (int)$rp_any['id_pelanggan'];
+            $alamat_profil_default = $rp_any['alamat'] ?? '';
+            $telepon_profil_default = $rp_any['no_telepon'] ?? '';
         }
     }
 }
@@ -135,6 +243,13 @@ if (isPelanggan()) {
                 <?php if (!empty($ref_barcode)): ?>
                     <p class="text-[11px] font-mono text-slate-500 bg-slate-50 p-2 rounded-xl border border-slate-200">
                         Ref Barcode: <?= htmlspecialchars($ref_barcode) ?>
+                    </p>
+                <?php endif; ?>
+                <?php if ($metode_bayar === 'Tunai'): ?>
+                    <p class="text-xs font-semibold text-slate-600">
+                        Tunai diterima: <span class="font-black text-slate-800"><?= rupiah($nominal_bayar) ?></span>
+                        <span class="mx-1">·</span>
+                        Kembalian: <span class="font-black text-emerald-700"><?= rupiah($kembalian) ?></span>
                     </p>
                 <?php endif; ?>
                 <p class="text-xs text-slate-500 max-w-sm mx-auto">
@@ -247,6 +362,37 @@ if (isPelanggan()) {
                             </div>
                         </div>
 
+                        <!-- Input Alamat Pengiriman Pesanan (Sebelum Membayar) -->
+                        <div class="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100 space-y-3">
+                            <div class="flex items-center justify-between border-b border-indigo-100/80 pb-2">
+                                <span class="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                                    <i data-lucide="map-pin" class="w-4 h-4 text-indigo-600"></i> Alamat Pengiriman Pesanan
+                                </span>
+                                <span class="text-[9.5px] bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">
+                                    Informasi Tujuan
+                                </span>
+                            </div>
+
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-[11px] font-bold text-slate-600 mb-1">No. Handphone / WA Penerima:</label>
+                                    <input type="text" name="no_telepon" value="<?= htmlspecialchars(!empty($telepon_profil_default) ? $telepon_profil_default : '0812-3456-7890') ?>" placeholder="08xx-xxxx-xxxx"
+                                        class="w-full border border-slate-300 bg-white p-2.5 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-bold text-slate-600 mb-1">Catatan Pengiriman (Opsional):</label>
+                                    <input type="text" name="catatan_pengiriman" placeholder="Contoh: Titipkan pos satpam / pagar hitam"
+                                        class="w-full border border-slate-300 bg-white p-2.5 rounded-xl text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-[11px] font-bold text-slate-600 mb-1">Alamat Lengkap Pengiriman:</label>
+                                <textarea name="alamat_pengiriman" rows="2" placeholder="Nama jalan, nomor rumah, RT/RW, kelurahan, kecamatan, dan kota tujuan..."
+                                    class="w-full border border-slate-300 bg-white p-2.5 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 leading-relaxed"><?= htmlspecialchars(!empty($alamat_profil_default) ? $alamat_profil_default : 'Jl. Raya Ponorogo - Madiun No. 45, RT 02 / RW 01, Kel. Keniten, Ponorogo') ?></textarea>
+                            </div>
+                        </div>
+
                         <!-- Panel Scanner Barcode / QRIS Pembayaran -->
                         <div class="bg-white p-4 rounded-2xl border border-indigo-100 space-y-3 shadow-sm">
                             <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
@@ -264,14 +410,14 @@ if (isPelanggan()) {
                                 <div>
                                     <label class="block text-[11px] font-bold text-slate-600 mb-1">Pilihan Cara Bayar:</label>
                                     <select id="selectMetodeCheckout" name="metode_bayar" class="w-full border border-slate-300 bg-slate-50 p-2.5 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                        <option value="Tunai">Tunai (Cash)</option>
-                                        <option value="QRIS">QRIS Instan (BCA/Dana/Gopay/OVO)</option>
-                                        <option value="DANA">DANA Dompet Digital</option>
-                                        <option value="ShopeePay">ShopeePay</option>
-                                        <option value="OVO">OVO Payment</option>
-                                        <option value="Transfer BCA">Transfer Virtual Account BCA</option>
-                                        <option value="Transfer BRI">Transfer Virtual Account BRI</option>
-                                        <option value="Saldo TokoKita">Saldo Dompet TokoKita Pay</option>
+                                        <option value="Tunai">Tunai (Cash POS)</option>
+                                        <option value="QRIS Instan">QRIS Instan (BCA/Dana/Gopay/OVO)</option>
+                                        <option value="ShopeePay / SPayLater">ShopeePay / SPayLater (Cicilan 0%)</option>
+                                        <option value="DANA Dompet Digital">DANA Dompet Digital</option>
+                                        <option value="Saldo Dompet TokoKita Pay">Saldo Dompet TokoKita Pay</option>
+                                        <option value="Transfer Virtual Account BCA">Transfer Virtual Account BCA</option>
+                                        <option value="Transfer Virtual Account BRI">Transfer Virtual Account BRI</option>
+                                        <option value="COD (Bayar di Tempat)">COD (Bayar di Tempat)</option>
                                     </select>
                                 </div>
 
@@ -286,6 +432,15 @@ if (isPelanggan()) {
                                             Reset
                                         </button>
                                     </div>
+                                </div>
+                                <div id="panelNominalTunaiCheckout" class="hidden">
+                                    <label for="inputNominalBayarCheckout" class="block text-[11px] font-bold text-slate-600 mb-1">Nominal Uang Tunai:</label>
+                                    <input type="number" id="inputNominalBayarCheckout" name="nominal_bayar" min="0" step="1"
+                                        value="<?= htmlspecialchars($nominal_bayar_input, ENT_QUOTES, 'UTF-8') ?>"
+                                        oninput="hitungKembalianCheckout()"
+                                        class="w-full border border-slate-300 bg-slate-50 p-2.5 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                        placeholder="Masukkan uang yang dibayarkan">
+                                    <p id="labelKembalianCheckout" class="text-[11px] font-semibold text-slate-500 mt-1">Masukkan nominal uang yang dibayarkan.</p>
                                 </div>
                             </div>
                         </div>
@@ -491,7 +646,6 @@ if (isPelanggan()) {
     <script src="script.js"></script>
     <script>
         lucide.createIcons();
-
         const totalKatalog = <?= $total ?? 0 ?>;
 
         function hitungTotalCheckout() {
@@ -499,6 +653,43 @@ if (isPelanggan()) {
             const potongan = totalKatalog * (diskon / 100);
             const akhir = Math.max(0, totalKatalog - potongan);
             document.getElementById('labelTotalAkhirCheckout').innerText = formatRupiah(akhir);
+            hitungKembalianCheckout();
+        }
+
+        function toggleInputNominalCheckout() {
+            const panel = document.getElementById('panelNominalTunaiCheckout');
+            const input = document.getElementById('inputNominalBayarCheckout');
+            const isTunai = document.getElementById('selectMetodeCheckout').value === 'Tunai';
+            panel.classList.toggle('hidden', !isTunai);
+            input.required = isTunai;
+            hitungKembalianCheckout();
+        }
+
+        function hitungKembalianCheckout() {
+            const input = document.getElementById('inputNominalBayarCheckout');
+            const label = document.getElementById('labelKembalianCheckout');
+            if (!input || !label) return;
+
+            const diskon = parseFloat(document.getElementById('inputDiskonCheckout').value) || 0;
+            const total = Math.max(0, totalKatalog - (totalKatalog * diskon / 100));
+            const dibayar = parseFloat(input.value);
+
+            if (!Number.isFinite(dibayar) || input.value === '') {
+                label.innerText = 'Masukkan nominal uang yang dibayarkan.';
+                label.className = 'text-[11px] font-semibold text-slate-500 mt-1';
+            } else if (dibayar < total) {
+                label.innerText = 'Nominal kurang ' + formatRupiah(total - dibayar);
+                label.className = 'text-[11px] font-semibold text-rose-600 mt-1';
+            } else {
+                label.innerText = 'Kembalian: ' + formatRupiah(dibayar - total);
+                label.className = 'text-[11px] font-semibold text-emerald-700 mt-1';
+            }
+        }
+
+        const selectMetodeCheckout = document.getElementById('selectMetodeCheckout');
+        if (selectMetodeCheckout) {
+            selectMetodeCheckout.addEventListener('change', toggleInputNominalCheckout);
+            toggleInputNominalCheckout();
         }
 
         // ============================================

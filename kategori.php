@@ -5,7 +5,7 @@ cekLogin();
 $notif_sukses = "";
 $notif_error  = "";
 
-// 1. Tambah Item ke Keranjang Session (Pelanggan & Kasir)
+// 1. Tambah Item ke Keranjang Session (Pelanggan & Kasir) dengan Pengecekan Stok Ketat
 if (isset($_POST['masuk_keranjang'])) {
     if (!isset($_SESSION['keranjang'])) {
         $_SESSION['keranjang'] = [];
@@ -17,13 +17,19 @@ if (isset($_POST['masuk_keranjang'])) {
     $prod  = mysqli_fetch_assoc($q_cek);
 
     if ($prod) {
-        if ($jumlah > $prod['stok']) {
-            $notif_error = "Stok tidak mencukupi! Stok {$prod['nama_produk']} tersisa {$prod['stok']} unit.";
+        $current_in_cart = isset($_SESSION['keranjang'][$id_produk]) ? (int)$_SESSION['keranjang'][$id_produk]['jumlah'] : 0;
+        $total_diminta   = $current_in_cart + $jumlah;
+
+        if ($prod['stok'] <= 0) {
+            $notif_error = "Maaf, stok produk '{$prod['nama_produk']}' saat ini sudah habis!";
+        } elseif ($total_diminta > $prod['stok']) {
+            $sisa_bisa = max(0, $prod['stok'] - $current_in_cart);
+            $notif_error = "Tidak bisa menambah barang! Stok '{$prod['nama_produk']}' tersisa {$prod['stok']} unit. " .
+                           ($current_in_cart > 0 ? "(Sudah ada $current_in_cart unit di keranjang, maksimal hanya bisa tambah $sisa_bisa unit lagi)." : "");
         } else {
             if (isset($_SESSION['keranjang'][$id_produk])) {
-                $_SESSION['keranjang'][$id_produk]['jumlah'] += $jumlah;
-                $jml_baru = $_SESSION['keranjang'][$id_produk]['jumlah'];
-                $res_sub  = mysqli_fetch_assoc(mysqli_query($conn, "SELECT HitungTotal({$prod['harga']}, $jml_baru) AS sub"));
+                $_SESSION['keranjang'][$id_produk]['jumlah'] = $total_diminta;
+                $res_sub  = mysqli_fetch_assoc(mysqli_query($conn, "SELECT HitungTotal({$prod['harga']}, $total_diminta) AS sub"));
                 $_SESSION['keranjang'][$id_produk]['subtotal'] = $res_sub['sub'];
             } else {
                 $_SESSION['keranjang'][$id_produk] = [
@@ -34,7 +40,7 @@ if (isset($_POST['masuk_keranjang'])) {
                     'subtotal'    => $prod['subtotal']
                 ];
             }
-            $notif_sukses = "{$prod['nama_produk']} ({$jumlah} item) berhasil dimasukkan ke Keranjang Belanja!";
+            $notif_sukses = "{$prod['nama_produk']} ($jumlah unit) berhasil dimasukkan ke Keranjang Belanja!";
         }
     }
 }
@@ -53,14 +59,14 @@ if (isset($_POST['tambah_kategori'])) {
     }
 }
 
-// 3. Hapus Kategori (Khusus Admin / Kasir)
+// 3. Hapus Kategori (Khusus Administrator)
 if (isset($_GET['hapus_kat'])) {
-    if (isPelanggan()) {
-        $notif_error = "Akses Ditolak: Akun Pelanggan tidak diizinkan menghapus data kategori!";
+    if (!isAdmin()) {
+        $notif_error = "Akses Ditolak: Hanya Administrator yang berhak menghapus data kategori! Kasir tidak diizinkan menghapus.";
     } else {
         $id_kat = (int)$_GET['hapus_kat'];
         if (mysqli_query($conn, "DELETE FROM tbl_kategori WHERE id_kategori = $id_kat")) {
-            $notif_sukses = "Kategori berhasil dihapus!";
+            $notif_sukses = "Kategori berhasil dihapus oleh Administrator!";
         } else {
             $notif_error = "Kategori tidak bisa dihapus karena masih digunakan oleh produk.";
         }
@@ -334,6 +340,8 @@ $jml_keranjang = isset($_SESSION['keranjang']) ? count($_SESSION['keranjang']) :
                 $badge_prod = !empty($pr['badge']) ? $pr['badge'] : 'Mall | ORI';
                 $promo_prod = !empty($pr['promo']) ? $pr['promo'] : 'PROMO XTRA';
                 $is_habis   = $pr['stok'] <= 0;
+                $jumlah_di_keranjang = isset($_SESSION['keranjang'][$pr['id_produk']]) ? (int)$_SESSION['keranjang'][$pr['id_produk']]['jumlah'] : 0;
+                $sisa_dapat_ditambah = max(0, (int)$pr['stok'] - $jumlah_di_keranjang);
             ?>
             <div class="card-produk group bg-white rounded-xl border border-slate-200/90 hover:border-[#ee4d2d]/60 shadow-sm hover:shadow-xl hover:-translate-y-1 transition duration-200 flex flex-col justify-between overflow-hidden relative"
                  data-nama="<?= strtolower($pr['nama_produk']) ?>"
@@ -395,19 +403,23 @@ $jml_keranjang = isset($_SESSION['keranjang']) ? count($_SESSION['keranjang']) :
                         </div>
 
                         <!-- Tombol Beli / Masuk Keranjang Express -->
-                        <?php if ($is_habis): ?>
+                        <?php if ($is_habis || $sisa_dapat_ditambah <= 0): ?>
                             <button type="button" disabled class="w-full bg-slate-200 text-slate-400 text-[10.5px] font-bold py-1.5 rounded-lg cursor-not-allowed">
-                                Stok Habis
+                                <?= $is_habis ? 'Stok Habis' : 'Batas di Keranjang' ?>
                             </button>
                         <?php else: ?>
                             <form method="POST" class="mt-0.5">
                                 <input type="hidden" name="id_produk" value="<?= $pr['id_produk'] ?>">
-                                <input type="hidden" name="jumlah" value="1">
-                                <button type="submit" name="masuk_keranjang" 
-                                    class="w-full bg-[#ee4d2d] hover:bg-[#d73211] active:scale-95 text-white font-black text-[10.5px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 shadow-sm shadow-[#ee4d2d]/25">
-                                    <i data-lucide="shopping-cart" class="w-3 h-3"></i>
-                                    <span>+ Keranjang</span>
-                                </button>
+                                <div class="flex items-center gap-1">
+                                    <input type="number" name="jumlah" value="1" min="1" max="<?= $sisa_dapat_ditambah ?>" required
+                                        aria-label="Jumlah <?= htmlspecialchars($pr['nama_produk'], ENT_QUOTES, 'UTF-8') ?>"
+                                        class="w-12 border border-slate-200 rounded-lg p-1.5 text-xs text-center font-bold focus:outline-none focus:ring-2 focus:ring-[#ee4d2d]">
+                                    <button type="submit" name="masuk_keranjang"
+                                        class="flex-1 bg-[#ee4d2d] hover:bg-[#d73211] active:scale-95 text-white font-black text-[10.5px] py-1.5 rounded-lg transition flex items-center justify-center gap-1 shadow-sm shadow-[#ee4d2d]/25">
+                                        <i data-lucide="shopping-cart" class="w-3 h-3"></i>
+                                        <span>+ Keranjang</span>
+                                    </button>
+                                </div>
                             </form>
                         <?php endif; ?>
                     </div>

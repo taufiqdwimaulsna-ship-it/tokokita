@@ -43,6 +43,23 @@ if (mysqli_num_rows($cek_col) == 0) {
     @mysqli_query($conn, "CREATE UNIQUE INDEX idx_barcode ON tbl_produk (barcode)");
 }
 
+// Otomatis pastikan Trigger Validasi Stok sebelum transaksi (mencegah stok minus / checkout melebihi stok)
+@mysqli_query($conn, "
+CREATE TRIGGER IF NOT EXISTS before_insert_detail_transaksi
+BEFORE INSERT ON tbl_detail_transaksi
+FOR EACH ROW
+BEGIN
+    DECLARE v_stok INT DEFAULT 0;
+    IF NEW.id_produk IS NOT NULL THEN
+        SELECT stok INTO v_stok FROM tbl_produk WHERE id_produk = NEW.id_produk;
+        IF v_stok < NEW.jumlah THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Stok barang tidak mencukupi untuk melakukan transaksi!';
+        END IF;
+    END IF;
+END;
+");
+
 function getFotoProduk($nama, $foto_url = '') {
     if (!empty($foto_url)) return $foto_url;
     $n = strtolower($nama);
@@ -73,6 +90,24 @@ function cekLogin() {
 }
 
 /**
+ * Mengecek apakah user yang sedang login adalah Administrator
+ */
+function isAdmin() {
+    if (!isset($_SESSION['role'])) return false;
+    $r = strtolower(trim($_SESSION['role']));
+    return ($r === 'super admin' || $r === 'admin' || $r === 'administrator');
+}
+
+/**
+ * Mengecek apakah user yang sedang login adalah Kasir
+ */
+function isKasir() {
+    if (!isset($_SESSION['role'])) return false;
+    $r = strtolower(trim($_SESSION['role']));
+    return ($r === 'kasir' || $r === 'kasir pos');
+}
+
+/**
  * Mengecek apakah user yang sedang login adalah Pelanggan
  */
 function isPelanggan() {
@@ -82,13 +117,12 @@ function isPelanggan() {
 }
 
 /**
- * Pembatasan Akses: Pelanggan HANYA boleh mengakses Dashboard, Kategori, dan Keranjang
- * Jika mencoba mengakses halaman kasir/admin/laporan, otomatis dialihkan ke index.php
+ * Pembatasan Akses: Pelanggan tidak boleh mengakses halaman khusus internal
  */
 function batasiAksesPelanggan() {
     cekLogin();
     if (isPelanggan()) {
-        $_SESSION['pesan_akses'] = "Akses Dibatasi! Akun Pelanggan hanya dapat mengakses halaman Dashboard, Kategori, dan Keranjang.";
+        $_SESSION['pesan_akses'] = "Akses Dibatasi! Halaman ini khusus untuk Administrator dan Kasir POS.";
         header("Location: index.php");
         exit;
     }
