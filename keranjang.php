@@ -220,10 +220,8 @@ if (isset($_POST['checkout_keranjang'])) {
         if (empty($notif_error)) {
             if ($nominal_bayar === false) {
                 $notif_error = "Masukkan nominal pembayaran dalam angka bulat.";
-            } elseif (strpos($metode_bayar, 'COD') !== false && $nominal_bayar < $total_tagihan_bulat) {
-                $notif_error = "Nominal pembayaran COD kurang dari total tagihan " . rupiah($total_bersih) . ".";
-            } elseif (strpos($metode_bayar, 'COD') === false && $nominal_bayar !== $total_tagihan_bulat) {
-                $notif_error = "Nominal pembayaran harus sama dengan total tagihan " . rupiah($total_bersih) . ".";
+            } elseif ($nominal_bayar < $total_tagihan_bulat) {
+                $notif_error = "Nominal pembayaran tidak boleh kurang dari total tagihan " . rupiah($total_bersih) . ".";
             }
         }
 
@@ -802,7 +800,7 @@ $jml_keranjang = count($_SESSION['keranjang']);
                             placeholder="Masukkan nominal pembayaran"
                             class="w-full border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#ee4d2d] focus:bg-white transition">
                         <p id="labelNominalPembayaran" class="text-[10px] text-slate-500">
-                            Masukkan nilai tagihan untuk metode digital, atau uang tunai minimal sebesar tagihan untuk COD.
+                            Masukkan nominal minimal sebesar total tagihan.
                         </p>
                     </div>
 
@@ -954,23 +952,22 @@ $jml_keranjang = count($_SESSION['keranjang']);
             const diskon = Math.min(100, Math.max(0, parseFloat(document.getElementById('inputDiskonKeranjang').value) || 0));
             const total = Math.round(totalAsli - (totalAsli * diskon / 100));
             const paid = parseFloat(input.value);
+            input.min = String(total);
 
             if (!Number.isFinite(paid) || input.value === '') {
-                label.innerText = isCod
-                    ? 'Masukkan uang tunai minimal ' + formatRupiahJs(total) + '.'
-                    : 'Masukkan nominal tepat ' + formatRupiahJs(total) + '.';
+                label.innerText = 'Masukkan nominal minimal ' + formatRupiahJs(total) + '.';
                 label.className = 'text-[10px] text-slate-500';
             } else if (paid < total) {
                 label.innerText = 'Nominal kurang ' + formatRupiahJs(total - paid) + '.';
                 label.className = 'text-[10px] text-rose-600 font-bold';
-            } else if (!isCod && paid !== total) {
-                label.innerText = 'Untuk pembayaran digital, nominal harus tepat ' + formatRupiahJs(total) + '.';
-                label.className = 'text-[10px] text-rose-600 font-bold';
             } else if (isCod) {
                 label.innerText = 'Perkiraan kembalian: ' + formatRupiahJs(paid - total) + '.';
                 label.className = 'text-[10px] text-emerald-700 font-bold';
+            } else if (paid > total) {
+                label.innerText = 'Nominal memenuhi tagihan, lebih ' + formatRupiahJs(paid - total) + ' dari total.';
+                label.className = 'text-[10px] text-emerald-700 font-bold';
             } else {
-                label.innerText = 'Nominal pembayaran sesuai total tagihan.';
+                label.innerText = 'Nominal pembayaran memenuhi total tagihan.';
                 label.className = 'text-[10px] text-emerald-700 font-bold';
             }
         }
