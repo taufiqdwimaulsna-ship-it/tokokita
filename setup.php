@@ -60,7 +60,8 @@ if ($action === 'install' || $action === 'reset') {
                     username VARCHAR(50) UNIQUE NOT NULL,
                     password VARCHAR(255) NOT NULL,
                     nama_lengkap VARCHAR(100) NOT NULL,
-                    role VARCHAR(30) DEFAULT 'Kasir POS'
+                    role VARCHAR(30) DEFAULT 'Kasir POS',
+                    id_pelanggan INT NULL UNIQUE
                 )",
 
                 'tbl_kategori' => "CREATE TABLE IF NOT EXISTS tbl_kategori (
@@ -71,6 +72,7 @@ if ($action === 'install' || $action === 'reset') {
                 'tbl_produk' => "CREATE TABLE IF NOT EXISTS tbl_produk (
                     id_produk INT AUTO_INCREMENT PRIMARY KEY,
                     id_kategori INT,
+                    foto_url VARCHAR(500) NULL,
                     nama_produk VARCHAR(100) NOT NULL,
                     harga DECIMAL(12,2) NOT NULL DEFAULT 0,
                     stok INT NOT NULL DEFAULT 0,
@@ -87,6 +89,7 @@ if ($action === 'install' || $action === 'reset') {
                 'tbl_transaksi' => "CREATE TABLE IF NOT EXISTS tbl_transaksi (
                     id_transaksi INT AUTO_INCREMENT PRIMARY KEY,
                     tanggal DATE NOT NULL,
+                    waktu_transaksi DATETIME NULL DEFAULT NULL,
                     id_pelanggan INT,
                     total_belanja DECIMAL(12,2) NOT NULL DEFAULT 0,
                     INDEX(tanggal),
@@ -322,8 +325,8 @@ if ($action === 'install' || $action === 'reset') {
                                    SET v_potongan = HitungDiskon(v_subtotal, p_diskon_persen);
                                    SET v_total_akhir = v_subtotal - v_potongan;
 
-                                   INSERT INTO tbl_transaksi (tanggal, id_pelanggan, total_belanja)
-                                   VALUES (CURDATE(), p_id_pelanggan, v_total_akhir);
+                                   INSERT INTO tbl_transaksi (tanggal, waktu_transaksi, id_pelanggan, total_belanja)
+                                   VALUES (CURDATE(), NOW(), p_id_pelanggan, v_total_akhir);
 
                                    SET v_id_transaksi = LAST_INSERT_ID();
 

@@ -1,15 +1,18 @@
 <?php
-session_start();
-if (!isset($_SESSION['login_toko'])) { header("Location: login.php"); exit; }
-require_once 'koneksi.php';
+require_once 'functions.php';
+cekLogin();
+if (isPelanggan()) {
+    header('Location: pesanan_saya.php');
+    exit;
+}
 
 $cari_kota = isset($_GET['kota']) ? mysqli_real_escape_string($conn, $_GET['kota']) : '';
 
-$sql_pesanan = "SELECT * FROM view_transaksi_pelanggan";
+$sql_pesanan = "SELECT v.*, t.waktu_transaksi FROM view_transaksi_pelanggan v JOIN tbl_transaksi t ON t.id_transaksi = v.id_transaksi";
 if ($cari_kota !== '') {
-    $sql_pesanan .= " WHERE kota = '$cari_kota'";
+    $sql_pesanan .= " WHERE v.kota = '$cari_kota'";
 }
-$sql_pesanan .= " ORDER BY id_transaksi DESC";
+$sql_pesanan .= " ORDER BY v.id_transaksi DESC";
 $q_pesanan = mysqli_query($conn, $sql_pesanan);
 
 // Lihat detail transaksi tertentu jika diklik
@@ -76,7 +79,7 @@ if ($id_pilih > 0) {
                 <thead>
                     <tr class="bg-slate-100 text-left text-xs text-slate-600">
                         <th class="p-3">ID Pesanan</th>
-                        <th class="p-3">Tanggal</th>
+                        <th class="p-3">Tanggal & Jam</th>
                         <th class="p-3">Nama Pelanggan</th>
                         <th class="p-3">Kota</th>
                         <th class="p-3">Total Belanja</th>
@@ -87,7 +90,10 @@ if ($id_pilih > 0) {
                     <?php while ($ps = mysqli_fetch_assoc($q_pesanan)): ?>
                     <tr class="border-b hover:bg-slate-50">
                         <td class="p-3 font-mono text-xs font-bold text-indigo-600">#TRX-<?= $ps['id_transaksi'] ?></td>
-                        <td class="p-3"><?= $ps['tanggal'] ?></td>
+                        <td class="p-3">
+                            <?= htmlspecialchars($ps['tanggal'], ENT_QUOTES, 'UTF-8') ?>
+                            <span class="block text-[10px] text-slate-400"><?= !empty($ps['waktu_transaksi']) ? date('H:i:s', strtotime($ps['waktu_transaksi'])) : 'Jam belum tercatat' ?></span>
+                        </td>
                         <td class="p-3 font-semibold"><?= $ps['nama_pelanggan'] ?></td>
                         <td class="p-3"><?= $ps['kota'] ?></td>
                         <td class="p-3 font-bold text-emerald-700">Rp <?= number_format($ps['total_belanja'], 0, ',', '.') ?></td>

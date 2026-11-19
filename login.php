@@ -20,7 +20,8 @@ mysqli_query($conn, "CREATE TABLE IF NOT EXISTS tbl_users (
     username VARCHAR(50) UNIQUE,
     password VARCHAR(255),
     nama_lengkap VARCHAR(100),
-    role VARCHAR(30)
+    role VARCHAR(30),
+    id_pelanggan INT NULL UNIQUE
 )");
 
 // Pastikan akun default Admin, Kasir, dan Pelanggan selalu tersedia

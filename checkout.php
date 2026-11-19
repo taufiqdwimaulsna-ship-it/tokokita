@@ -1,5 +1,6 @@
 <?php
 require_once 'functions.php';
+require_once 'duitku_config.php';
 cekLogin();
 
 if (!isset($_SESSION['keranjang'])) {
@@ -13,14 +14,13 @@ $ref_barcode  = "";
 $nominal_bayar_input = "";
 $nominal_bayar = 0;
 $kembalian = 0;
+$hasil_metode_checkout = ambilMetodePembayaranDuitku(20000);
+$metode_duitku_checkout = $hasil_metode_checkout['status'] ? $hasil_metode_checkout['methods'] : [];
 
 if (isset($_POST['bayar_sekarang']) && !empty($_SESSION['keranjang'])) {
     // Kunci ID Pelanggan jika akun Pelanggan
     if (isPelanggan()) {
-        $nama_me = mysqli_real_escape_string($conn, $_SESSION['nama_lengkap']);
-        $qp_me = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan WHERE nama_pelanggan = '$nama_me' LIMIT 1");
-        $rp_me = mysqli_fetch_assoc($qp_me);
-        $id_pelanggan = $rp_me ? (int)$rp_me['id_pelanggan'] : 1;
+        $id_pelanggan = getIdPelangganLogin();
     } else {
         $id_pelanggan = (int)$_POST['id_pelanggan'];
     }
@@ -35,26 +35,32 @@ if (isset($_POST['bayar_sekarang']) && !empty($_SESSION['keranjang'])) {
 
     // VALIDASI KETAT STOK BARANG SEBELUM CHECKOUT
     $stok_aman = true;
-    foreach ($_SESSION['keranjang'] as $it) {
-        $idp_chk = (int)$it['id_produk'];
-        $jml_chk = (int)$it['jumlah'];
-        $q_stk = mysqli_query($conn, "SELECT nama_produk, stok FROM tbl_produk WHERE id_produk = $idp_chk");
-        $r_stk = mysqli_fetch_assoc($q_stk);
+    if (isPelanggan() && $id_pelanggan <= 0) {
+        $error_trx = 'Akun pelanggan belum terhubung dengan data member. Hubungi kasir sebelum checkout.';
+        $stok_aman = false;
+    }
+    if ($stok_aman) {
+        foreach ($_SESSION['keranjang'] as $it) {
+            $idp_chk = (int)$it['id_produk'];
+            $jml_chk = (int)$it['jumlah'];
+            $q_stk = mysqli_query($conn, "SELECT nama_produk, stok FROM tbl_produk WHERE id_produk = $idp_chk");
+            $r_stk = mysqli_fetch_assoc($q_stk);
 
-        if (!$r_stk) {
-            $error_trx = "Produk '{$it['nama_produk']}' tidak ditemukan dalam katalog!";
-            $stok_aman = false;
-            break;
-        }
-        if ($r_stk['stok'] <= 0) {
-            $error_trx = "Checkout gagal! Stok '{$r_stk['nama_produk']}' saat ini habis.";
-            $stok_aman = false;
-            break;
-        }
-        if ($jml_chk > $r_stk['stok']) {
-            $error_trx = "Checkout ditolak! Jumlah pesanan untuk '{$r_stk['nama_produk']}' ($jml_chk unit) melebihi stok yang tersedia ({$r_stk['stok']} unit).";
-            $stok_aman = false;
-            break;
+            if (!$r_stk) {
+                $error_trx = "Produk '{$it['nama_produk']}' tidak ditemukan dalam katalog!";
+                $stok_aman = false;
+                break;
+            }
+            if ($r_stk['stok'] <= 0) {
+                $error_trx = "Checkout gagal! Stok '{$r_stk['nama_produk']}' saat ini habis.";
+                $stok_aman = false;
+                break;
+            }
+            if ($jml_chk > $r_stk['stok']) {
+                $error_trx = "Checkout ditolak! Jumlah pesanan untuk '{$it['nama_produk']}' ($jml_chk unit) melebihi stok yang tersedia ({$r_stk['stok']} unit).";
+                $stok_aman = false;
+                break;
+            }
         }
     }
 
@@ -69,7 +75,14 @@ if (isset($_POST['bayar_sekarang']) && !empty($_SESSION['keranjang'])) {
 
         // Validasi nominal tunai dan saldo sebelum membuat transaksi
         $pembayaran_aman = true;
-        if ($metode_bayar === 'Tunai') {
+        $is_tunai = (strtoupper(trim($metode_bayar)) === 'TUNAI');
+        $is_gateway = isMetodeDuitku($metode_bayar);
+        if (!$is_tunai && !$is_gateway) {
+            $error_trx = "Metode pembayaran tidak valid. Pilih metode yang tersedia.";
+            $pembayaran_aman = false;
+        }
+
+        if ($is_tunai) {
             $nominal_bayar = filter_var($nominal_bayar_input, FILTER_VALIDATE_INT);
             if ($nominal_bayar === false) {
                 $error_trx = "Masukkan nominal pembayaran tunai dalam angka bulat.";
@@ -89,6 +102,27 @@ if (isset($_POST['bayar_sekarang']) && !empty($_SESSION['keranjang'])) {
             if ($saldo_ada < $total_akhir) {
                 $error_trx = "Saldo Dompet TokoKita Pay tidak mencukupi! Saldo: " . rupiah($saldo_ada) . ", Total Tagihan: " . rupiah($total_akhir);
                 $pembayaran_aman = false;
+            }
+        }
+
+        $pesan_batas_duitku = validasiBatasNominalDuitku($metode_bayar, $total_akhir);
+        if ($pesan_batas_duitku !== '') {
+            $error_trx = $pesan_batas_duitku;
+            $pembayaran_aman = false;
+        }
+        if ($is_gateway && $pembayaran_aman) {
+            if (!duitku_konfigurasi_siap()) {
+                $error_trx = "Konfigurasi Duitku belum lengkap. Periksa DUITKU_MERCHANT_CODE dan DUITKU_API_KEY.";
+                $pembayaran_aman = false;
+            } else {
+                $metode_aktif_checkout = ambilMetodePembayaranDuitku($total_akhir);
+                if (empty($metode_aktif_checkout['status'])) {
+                    $error_trx = $metode_aktif_checkout['pesan'] ?? "Gagal memeriksa metode pembayaran Duitku.";
+                    $pembayaran_aman = false;
+                } elseif (!isset($metode_aktif_checkout['methods'][$metode_bayar])) {
+                    $error_trx = "Metode pembayaran " . namaMetodeDuitku($metode_bayar) . " tidak aktif untuk nominal transaksi ini.";
+                    $pembayaran_aman = false;
+                }
             }
         }
 
@@ -114,10 +148,10 @@ if (isset($_POST['bayar_sekarang']) && !empty($_SESSION['keranjang'])) {
                 }
             }
 
-            $status_bayar = (strpos($metode_bayar, 'COD') !== false) ? 'Menunggu Pembayaran' : 'Lunas';
+            $status_bayar = $is_gateway ? 'Pending' : ((strpos($metode_bayar, 'COD') !== false) ? 'Menunggu Pembayaran' : 'Lunas');
 
             mysqli_begin_transaction($conn);
-            $ok = mysqli_query($conn, "INSERT INTO tbl_transaksi (tanggal, id_pelanggan, total_belanja, metode_pembayaran, status_pembayaran, ref_pembayaran, alamat_pengiriman, no_telepon, catatan_pengiriman) VALUES (CURDATE(), $id_pelanggan, $total_akhir, '$metode_bayar', '$status_bayar', '$ref_barcode', '$alamat_pengiriman', '$no_telepon', '$catatan_kirim')");
+            $ok = mysqli_query($conn, "INSERT INTO tbl_transaksi (tanggal, waktu_transaksi, id_pelanggan, total_belanja, metode_pembayaran, status_pembayaran, ref_pembayaran, alamat_pengiriman, no_telepon, catatan_pengiriman) VALUES (CURDATE(), NOW(), $id_pelanggan, $total_akhir, '$metode_bayar', '$status_bayar', '$ref_barcode', '$alamat_pengiriman', '$no_telepon', '$catatan_kirim')");
             $id_trx = mysqli_insert_id($conn);
 
             $pesan_err_item = "";
@@ -143,16 +177,46 @@ if (isset($_POST['bayar_sekarang']) && !empty($_SESSION['keranjang'])) {
             }
 
             if ($ok) {
-                mysqli_commit($conn);
-                $sukses_trx = $id_trx;
-                $_SESSION['keranjang'] = [];
+    // Jika memilih pembayaran online Duitku
+    if ($is_gateway) {
+        if (!duitku_konfigurasi_siap()) {
+            mysqli_rollback($conn);
+            $error_trx = "Konfigurasi Duitku belum lengkap. Isi DUITKU_MERCHANT_CODE dan DUITKU_API_KEY.";
+        } else {
+        // Ambil nama pelanggan
+        $r_pel = mysqli_fetch_assoc(mysqli_query($conn, "SELECT nama_pelanggan FROM tbl_pelanggan WHERE id_pelanggan = $id_pelanggan"));
+        $nama_pembeli = $r_pel['nama_pelanggan'] ?? 'Pelanggan TokoKita';
 
-                // Catat audit log transaksi
-                mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_transaksi', 'BAYAR TRX', 'Transaksi #$id_trx dibayar via $metode_bayar Ref: $ref_barcode')");
-            } else {
-                mysqli_rollback($conn);
-                $error_trx = "Transaksi gagal dan telah di-ROLLBACK otomatis! " . ($pesan_err_item ? $pesan_err_item : "Stok produk tidak mencukupi.");
+        $order_id_duitku = "TRX-" . $id_trx;
+        $duitku = buatTransaksiDuitku($order_id_duitku, $total_akhir, $metode_bayar, "Belanja TokoKita #$id_trx", $nama_pembeli);
+
+        if ($duitku['status']) {
+            $ref_url = mysqli_real_escape_string($conn, $duitku['paymentUrl']);
+            $ref_id  = mysqli_real_escape_string($conn, $duitku['reference']);
+            $update_status = mysqli_query($conn, "UPDATE tbl_transaksi SET status_pembayaran='Pending', ref_pembayaran='$ref_id', duitku_reference='$ref_id', duitku_url='$ref_url' WHERE id_transaksi=$id_trx");
+
+            if ($update_status) {
+                mysqli_commit($conn);
+                $_SESSION['keranjang'] = [];
+                header("Location: " . $duitku['paymentUrl']);
+                exit;
             }
+            mysqli_rollback($conn);
+            $error_trx = "Gagal menyimpan data invoice Duitku.";
+        } else {
+            mysqli_rollback($conn);
+            $error_trx = "Gagal membuat invoice Duitku: " . $duitku['pesan'];
+        }
+        }
+    } else {
+        mysqli_commit($conn);
+        $_SESSION['keranjang'] = [];
+        $sukses_trx = $id_trx;
+    }
+} else {
+    mysqli_rollback($conn);
+    $error_trx = "Checkout gagal: " . (!empty($pesan_err_item) ? $pesan_err_item : "terjadi kesalahan database.");
+}
         }
     }
 }
@@ -245,7 +309,7 @@ if (isPelanggan()) {
                         Ref Barcode: <?= htmlspecialchars($ref_barcode) ?>
                     </p>
                 <?php endif; ?>
-                <?php if ($metode_bayar === 'Tunai'): ?>
+                <?php if (strtoupper(trim($metode_bayar)) === 'TUNAI'): ?>
                     <p class="text-xs font-semibold text-slate-600">
                         Tunai diterima: <span class="font-black text-slate-800"><?= rupiah($nominal_bayar) ?></span>
                         <span class="mx-1">·</span>
@@ -409,16 +473,26 @@ if (isPelanggan()) {
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div>
                                     <label class="block text-[11px] font-bold text-slate-600 mb-1">Pilihan Cara Bayar:</label>
-                                    <select id="selectMetodeCheckout" name="metode_bayar" class="w-full border border-slate-300 bg-slate-50 p-2.5 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                        <option value="Tunai">Tunai (Cash POS)</option>
-                                        <option value="QRIS Instan">QRIS Instan (BCA/Dana/Gopay/OVO)</option>
-                                        <option value="ShopeePay / SPayLater">ShopeePay / SPayLater (Cicilan 0%)</option>
-                                        <option value="DANA Dompet Digital">DANA Dompet Digital</option>
-                                        <option value="Saldo Dompet TokoKita Pay">Saldo Dompet TokoKita Pay</option>
-                                        <option value="Transfer Virtual Account BCA">Transfer Virtual Account BCA</option>
-                                        <option value="Transfer Virtual Account BRI">Transfer Virtual Account BRI</option>
-                                        <option value="COD (Bayar di Tempat)">COD (Bayar di Tempat)</option>
-                                    </select>
+                                  <select id="selectMetodeCheckout" name="metode_bayar" class="w-full border border-slate-300 bg-slate-50 p-2.5 rounded-xl text-xs font-bold text-slate-800">
+                                      <option value="TUNAI">Tunai (Cash Langsung di Kasir)</option>
+                                      <?php if ($metode_duitku_checkout): ?>
+                                          <?php
+                                          $grup_checkout = '';
+                                          foreach ($metode_duitku_checkout as $metode):
+                                              if ($metode['group'] !== $grup_checkout):
+                                                  if ($grup_checkout !== '') echo '</optgroup>';
+                                                  $grup_checkout = $metode['group'];
+                                          ?>
+                                                  <optgroup label="<?= htmlspecialchars($grup_checkout) ?> — Duitku">
+                                              <?php endif; ?>
+                                              <option value="<?= htmlspecialchars($metode['code']) ?>"><?= htmlspecialchars($metode['name']) ?></option>
+                                          <?php endforeach; ?>
+                                          <?php if ($grup_checkout !== '') echo '</optgroup>'; ?>
+                                      <?php endif; ?>
+                                  </select>
+                                  <?php if (!$hasil_metode_checkout['status']): ?>
+                                      <p class="mt-1 text-[10px] font-semibold text-amber-700"><?= htmlspecialchars($hasil_metode_checkout['pesan']) ?> Tunai tetap tersedia.</p>
+                                  <?php endif; ?>
                                 </div>
 
                                 <div>
@@ -659,7 +733,7 @@ if (isPelanggan()) {
         function toggleInputNominalCheckout() {
             const panel = document.getElementById('panelNominalTunaiCheckout');
             const input = document.getElementById('inputNominalBayarCheckout');
-            const isTunai = document.getElementById('selectMetodeCheckout').value === 'Tunai';
+            const isTunai = document.getElementById('selectMetodeCheckout').value === 'TUNAI';
             panel.classList.toggle('hidden', !isTunai);
             input.required = isTunai;
             hitungKembalianCheckout();
@@ -803,7 +877,17 @@ if (isPelanggan()) {
 
             // Set metode di form
             const select = document.getElementById('selectMetodeCheckout');
-            if (select) select.value = parsed.metode;
+            if (select) {
+                const metodeDuitku = {
+                    'DANA': 'DA',
+                    'ShopeePay': 'SP',
+                    'OVO': 'OV',
+                    'Transfer BCA': 'BC',
+                    'Transfer BRI': 'BR',
+                    'QRIS': 'NQ'
+                };
+                select.value = metodeDuitku[parsed.metode] || 'NQ';
+            }
 
             const hiddenRef = document.getElementById('hiddenRefBarcode');
             if (hiddenRef) hiddenRef.value = parsed.raw;
@@ -826,7 +910,7 @@ if (isPelanggan()) {
 
         function resetBarcodeCheckout() {
             const select = document.getElementById('selectMetodeCheckout');
-            if (select) select.value = 'Tunai';
+            if (select) select.value = 'TUNAI';
 
             const hiddenRef = document.getElementById('hiddenRefBarcode');
             if (hiddenRef) hiddenRef.value = '';

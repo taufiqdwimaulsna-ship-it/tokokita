@@ -38,22 +38,24 @@ if (isset($_POST['btn_register'])) {
                 // Jika mendaftar sebagai Pelanggan, daftarkan juga ke tbl_pelanggan via Stored Procedure TambahPelanggan
                 if ($role === 'Pelanggan') {
                     $kota_pel = !empty($kota) ? $kota : 'Ponorogo';
-                    // Memanggil SP TambahPelanggan (Memicu Trigger after_insert_pelanggan)
-                    @mysqli_query($conn, "CALL TambahPelanggan('$nama', '$kota_pel')");
-                    while (mysqli_more_results($conn) && mysqli_next_result($conn)) {;}
-
-                    // Ambil ID pelanggan yang baru dibuat
-                    $q_new_pel = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan ORDER BY id_pelanggan DESC LIMIT 1");
-                    $id_new_pel = ($row_p = mysqli_fetch_assoc($q_new_pel)) ? (int)$row_p['id_pelanggan'] : 1;
-
-                    // Berikan bonus saldo selamat datang Rp 50.000 di tbl_topup
-                    mysqli_query($conn, "INSERT INTO tbl_topup (id_pelanggan, nominal, metode, status) VALUES ($id_new_pel, 50000, 'Bonus Registrasi', 'Berhasil')");
+                    $id_user_baru = (int)mysqli_insert_id($conn);
+                    if (mysqli_query($conn, "INSERT INTO tbl_pelanggan (nama_pelanggan, kota) VALUES ('$nama', '$kota_pel')")) {
+                        $id_new_pel = (int)mysqli_insert_id($conn);
+                        $link_user = mysqli_query($conn, "UPDATE tbl_users SET id_pelanggan = $id_new_pel WHERE id_user = $id_user_baru");
+                        $bonus_saldo = mysqli_query($conn, "INSERT INTO tbl_topup (id_pelanggan, nominal, metode, status) VALUES ($id_new_pel, 50000, 'Bonus Registrasi', 'Berhasil')");
+                        if (!$link_user || !$bonus_saldo) {
+                            $error = "Akun berhasil dibuat, tetapi data pelanggan belum selesai disiapkan: " . mysqli_error($conn);
+                        }
+                    } else {
+                        $error = "Akun berhasil dibuat, tetapi data pelanggan gagal disimpan: " . mysqli_error($conn);
+                    }
                 }
 
                 // Catat log aktivitas sistem
-                mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_users', 'REGISTRASI', 'Pendaftaran akun baru username: $username ($role)')");
-
-                $sukses = "Pendaftaran berhasil! Akun '$username' telah aktif. Silakan masuk untuk mulai berbelanja.";
+                if ($error === '') {
+                    mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_users', 'REGISTRASI', 'Pendaftaran akun baru username: $username ($role)')");
+                    $sukses = "Pendaftaran berhasil! Akun '$username' telah aktif. Silakan masuk untuk mulai berbelanja.";
+                }
             } else {
                 $error = "Gagal mendaftarkan akun: " . mysqli_error($conn);
             }

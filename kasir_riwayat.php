@@ -3,8 +3,9 @@ require_once 'functions.php';
 batasiAksesPelanggan();
 
 $q_riwayat = mysqli_query($conn, "
-    SELECT v.*, HitungPajak(v.total_belanja) AS ppn, KategoriBelanja(v.total_belanja) AS level_pelanggan
+    SELECT v.*, t.waktu_transaksi, HitungPajak(v.total_belanja) AS ppn, KategoriBelanja(v.total_belanja) AS level_pelanggan
     FROM view_transaksi_pelanggan v
+    JOIN tbl_transaksi t ON t.id_transaksi = v.id_transaksi
     ORDER BY v.id_transaksi DESC
 ");
 
@@ -75,7 +76,7 @@ $stat_riwayat = mysqli_fetch_assoc(mysqli_query($conn, "
                     <thead>
                         <tr class="bg-slate-50 text-slate-500 uppercase tracking-wider text-[10px] border-b border-slate-100">
                             <th class="p-3.5">No. Struk</th>
-                            <th class="p-3.5">Tanggal</th>
+                            <th class="p-3.5">Tanggal & Jam</th>
                             <th class="p-3.5">Nama Pelanggan</th>
                             <th class="p-3.5">Kota</th>
                             <th class="p-3.5">Status Loyalitas</th>
@@ -90,7 +91,10 @@ $stat_riwayat = mysqli_fetch_assoc(mysqli_query($conn, "
                             <td class="p-3.5 font-mono font-bold text-indigo-600">
                                 #TRX-<?= str_pad($r['id_transaksi'], 4, '0', STR_PAD_LEFT) ?>
                             </td>
-                            <td class="p-3.5 text-slate-500"><?= $r['tanggal'] ?></td>
+                            <td class="p-3.5 text-slate-500">
+                                <?= htmlspecialchars($r['tanggal'], ENT_QUOTES, 'UTF-8') ?>
+                                <span class="block text-[10px] text-slate-400"><?= !empty($r['waktu_transaksi']) ? date('H:i:s', strtotime($r['waktu_transaksi'])) : 'Jam belum tercatat' ?></span>
+                            </td>
                             <td class="p-3.5 font-bold text-slate-800"><?= htmlspecialchars($r['nama_pelanggan']) ?></td>
                             <td class="p-3.5 text-slate-600"><?= htmlspecialchars($r['kota']) ?></td>
                             <td class="p-3.5">

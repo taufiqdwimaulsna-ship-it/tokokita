@@ -37,12 +37,68 @@ if (isset($_POST['tambah'])) {
     $harga   = (float)$_POST['harga'];
     $stok    = (int)$_POST['stok'];
     $barcode = isset($_POST['barcode']) ? mysqli_real_escape_string($conn, trim($_POST['barcode'])) : '';
+    $foto_url = getFotoProduk(trim($_POST['nama_produk']));
+    $foto_file_path = '';
     if (empty($barcode)) {
         // Otomatis generate kode barcode 899xxxx
         $barcode = '899' . str_pad(rand(10000000, 99999999), 8, '0', STR_PAD_LEFT);
     }
-    mysqli_query($conn, "INSERT INTO tbl_produk (id_kategori, nama_produk, harga, stok, barcode) VALUES ($id_kat, '$nama', $harga, $stok, '$barcode')");
-    $notif = "Produk '$nama' (Barcode: $barcode) berhasil ditambahkan ke katalog inventori!";
+
+    if (isset($_FILES['foto_produk']) && $_FILES['foto_produk']['error'] !== UPLOAD_ERR_NO_FILE) {
+        $file = $_FILES['foto_produk'];
+        if ($file['error'] !== UPLOAD_ERR_OK) {
+            $notif = "Foto produk gagal diunggah. Periksa ukuran file dan coba lagi.";
+            $is_error = true;
+        } elseif ($file['size'] > 5 * 1024 * 1024) {
+            $notif = "Ukuran foto produk maksimal 5 MB.";
+            $is_error = true;
+        } else {
+            $image_info = @getimagesize($file['tmp_name']);
+            $image_extensions = [
+                IMAGETYPE_JPEG => 'jpg',
+                IMAGETYPE_PNG => 'png'
+            ];
+            if (defined('IMAGETYPE_WEBP')) {
+                $image_extensions[IMAGETYPE_WEBP] = 'webp';
+            }
+
+            if (!$image_info || !isset($image_extensions[$image_info[2]])) {
+                $notif = "Format foto harus berupa JPG, PNG, atau WebP.";
+                $is_error = true;
+            } else {
+                $upload_dir = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'produk';
+                if (!is_dir($upload_dir) && !@mkdir($upload_dir, 0755, true) && !is_dir($upload_dir)) {
+                    $notif = "Folder penyimpanan foto produk tidak dapat dibuat.";
+                    $is_error = true;
+                } else {
+                    $file_name = 'sku-' . bin2hex(random_bytes(16)) . '.' . $image_extensions[$image_info[2]];
+                    $foto_file_path = $upload_dir . DIRECTORY_SEPARATOR . $file_name;
+                    if (move_uploaded_file($file['tmp_name'], $foto_file_path)) {
+                        $foto_url = 'uploads/produk/' . $file_name;
+                    } else {
+                        $foto_file_path = '';
+                        $notif = "Foto produk gagal disimpan ke folder upload.";
+                        $is_error = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!$is_error) {
+        $foto = mysqli_real_escape_string($conn, $foto_url);
+        if (mysqli_query($conn, "INSERT INTO tbl_produk (id_kategori, nama_produk, harga, stok, barcode, foto_url) VALUES ($id_kat, '$nama', $harga, $stok, '$barcode', '$foto')")) {
+            $notif = "Produk '$nama' (Barcode: $barcode) berhasil ditambahkan ke katalog inventori!";
+        } else {
+            if ($foto_file_path !== '' && is_file($foto_file_path)) {
+                unlink($foto_file_path);
+            }
+            $notif = "Gagal menambahkan produk: " . mysqli_error($conn);
+            $is_error = true;
+        }
+    } elseif ($foto_file_path !== '' && is_file($foto_file_path)) {
+        unlink($foto_file_path);
+    }
 }
 
 if (isset($_POST['update'])) {
@@ -136,7 +192,7 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                 </div>
             </div>
 
-            <form method="POST" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3">
+            <form method="POST" enctype="multipart/form-data" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
                 <div>
                     <label class="block text-[11px] font-bold text-slate-500 mb-1">Kategori</label>
                     <select name="id_kategori" required class="w-full border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -171,6 +227,14 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                     <input type="number" name="stok" placeholder="Contoh: 50" required
                         class="w-full border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 </div>
+                <div>
+                    <label class="block text-[11px] font-bold text-slate-500 mb-1">Foto Produk</label>
+                    <input type="file" id="fotoProduk" name="foto_produk" accept=".jpg,.jpeg,.png,.webp" onchange="previewFotoProduk(this.files)"
+                        class="w-full border border-slate-200 bg-slate-50 p-2 rounded-xl text-[10px]">
+                    <p class="mt-1 text-[9px] text-slate-400">Opsional, maks. 5 MB. Kosongkan untuk gambar otomatis.</p>
+                    <img id="previewFotoProduk" src="<?= htmlspecialchars(getFotoProduk(''), ENT_QUOTES, 'UTF-8') ?>" alt="Pratinjau foto produk"
+                        class="mt-1 h-12 w-12 rounded-lg border border-slate-200 object-cover" loading="lazy">
+                </div>
                 <div class="flex items-end">
                     <button type="submit" name="tambah"
                         class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-2.5 rounded-xl text-xs shadow-md shadow-indigo-600/30 transition flex items-center justify-center gap-1.5">
@@ -202,6 +266,7 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                     <thead>
                         <tr class="bg-slate-50 text-slate-400 uppercase tracking-wider text-[10px] border-b">
                             <th class="p-3.5">ID</th>
+                            <th class="p-3.5">Foto Produk</th>
                             <th class="p-3.5">Barcode / SKU</th>
                             <th class="p-3.5">Nama Produk</th>
                             <th class="p-3.5">Kategori</th>
@@ -214,6 +279,12 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
                         <?php while ($p = mysqli_fetch_assoc($q_produk)): ?>
                         <tr class="hover:bg-slate-50/70 transition">
                             <td class="p-3.5 font-mono font-bold text-indigo-600">#<?= $p['id_produk'] ?></td>
+                            <td class="p-3.5">
+                                <img src="<?= htmlspecialchars(getFotoProduk($p['nama_produk'], $p['foto_url'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                                    alt="<?= htmlspecialchars($p['nama_produk'], ENT_QUOTES, 'UTF-8') ?>"
+                                    class="h-12 w-12 rounded-lg border border-slate-200 object-cover" loading="lazy"
+                                    onerror="this.onerror=null;this.src='<?= htmlspecialchars(getFotoProduk(''), ENT_QUOTES, 'UTF-8') ?>'">
+                            </td>
                             <td class="p-3.5 font-mono text-[11px] font-bold text-slate-700">
                                 <span class="bg-slate-100 border border-slate-200 px-2 py-0.5 rounded text-[10px]">
                                     <?= htmlspecialchars($p['barcode'] ?? ('899' . str_pad($p['id_produk'], 8, '0', STR_PAD_LEFT))) ?>
@@ -309,6 +380,27 @@ $stat_p = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) AS total_sku, 
     <script src="script.js"></script>
     <script>
         lucide.createIcons();
+
+        const fotoProdukDefault = <?= json_encode(getFotoProduk('')) ?>;
+
+        function previewFotoProduk(files) {
+            const preview = document.getElementById('previewFotoProduk');
+            if (!preview) return;
+            if (!files || files.length === 0) {
+                preview.src = fotoProdukDefault;
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                if (typeof reader.result === 'string') preview.src = reader.result;
+            };
+            reader.onerror = () => {
+                preview.src = fotoProdukDefault;
+                tampilkanToast('Foto tidak dapat ditampilkan. Silakan pilih file gambar lain.', 'error');
+            };
+            reader.readAsDataURL(files[0]);
+        }
 
         let qrAdmin = null;
         let isCamAdminRunning = false;

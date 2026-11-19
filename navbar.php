@@ -170,6 +170,7 @@ $is_admin     = function_exists('isAdmin') ? isAdmin() : (!$is_pelanggan && !$is
                     <?= navItem('index.php', 'Dashboard Belanja', 'layout-dashboard', $aktif) ?>
                     <?= navItem('kategori.php', 'Katalog Produk', 'store', $aktif) ?>
                     <?= navItem('keranjang.php', 'Keranjang Belanja', 'shopping-cart', $aktif, $jml_keranjang_nav) ?>
+                    <?= navItem('pesanan_saya.php', 'Riwayat Transaksi', 'history', $aktif) ?>
                     <?= navItem('saldo.php', 'Isi Saldo Member', 'wallet', $aktif) ?>
                     <?= navItem('profil.php', 'Profil Saya', 'user', $aktif) ?>
                 <?php elseif ($is_kasir): ?>

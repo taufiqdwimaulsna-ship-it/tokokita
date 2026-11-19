@@ -41,8 +41,11 @@ $q_terjual = mysqli_query($conn, "
             <div class="bg-white p-8 rounded-2xl text-center">Produk tidak ditemukan. <a href="admin_produk.php" class="text-indigo-600 underline">Kembali</a></div>
         <?php else: ?>
             <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div class="bg-indigo-50 rounded-2xl p-8 flex flex-col items-center justify-center text-indigo-600">
-                    <i data-lucide="package" class="w-20 h-20 mb-3"></i>
+                <div class="bg-indigo-50 rounded-2xl p-5 flex flex-col items-center justify-center gap-3">
+                    <img src="<?= htmlspecialchars(getFotoProduk($prod['nama_produk'], $prod['foto_url'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
+                        alt="<?= htmlspecialchars($prod['nama_produk'], ENT_QUOTES, 'UTF-8') ?>"
+                        class="max-h-64 w-full rounded-xl object-contain" loading="lazy"
+                        onerror="this.onerror=null;this.src='<?= htmlspecialchars(getFotoProduk(''), ENT_QUOTES, 'UTF-8') ?>'">
                     <span class="bg-indigo-600 text-white text-xs px-3 py-1 rounded-full font-bold"><?= $prod['nama_kategori'] ?? 'Umum' ?></span>
                 </div>
                 <div class="md:col-span-2 space-y-4">

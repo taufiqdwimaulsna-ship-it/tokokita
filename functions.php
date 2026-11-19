@@ -4,6 +4,16 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 require_once 'koneksi.php';
 
+$cek_tabel_users = mysqli_query($conn, "SHOW TABLES LIKE 'tbl_users'");
+if ($cek_tabel_users && mysqli_num_rows($cek_tabel_users) > 0) {
+    $cek_id_pelanggan_user = mysqli_query($conn, "SHOW COLUMNS FROM tbl_users LIKE 'id_pelanggan'");
+    if ($cek_id_pelanggan_user && mysqli_num_rows($cek_id_pelanggan_user) === 0) {
+        if (!mysqli_query($conn, "ALTER TABLE tbl_users ADD COLUMN id_pelanggan INT NULL UNIQUE")) {
+            error_log('Gagal menambahkan relasi pelanggan ke tbl_users: ' . mysqli_error($conn));
+        }
+    }
+}
+
 // Otomatis menyiapkan tabel tambahan untuk fitur Topup, Favorit, dan Voucher Diskon
 mysqli_query($conn, "CREATE TABLE IF NOT EXISTS tbl_topup (
     id_topup INT AUTO_INCREMENT PRIMARY KEY,
@@ -41,6 +51,30 @@ $cek_col = mysqli_query($conn, "SHOW COLUMNS FROM tbl_produk LIKE 'barcode'");
 if (mysqli_num_rows($cek_col) == 0) {
     @mysqli_query($conn, "ALTER TABLE tbl_produk ADD COLUMN barcode VARCHAR(50) DEFAULT NULL AFTER id_kategori");
     @mysqli_query($conn, "CREATE UNIQUE INDEX idx_barcode ON tbl_produk (barcode)");
+}
+
+$cek_foto_col = mysqli_query($conn, "SHOW COLUMNS FROM tbl_produk LIKE 'foto_url'");
+if ($cek_foto_col && mysqli_num_rows($cek_foto_col) === 0) {
+    @mysqli_query($conn, "ALTER TABLE tbl_produk ADD COLUMN foto_url VARCHAR(500) NULL AFTER barcode");
+}
+
+// Kolom dukungan Payment Gateway Duitku
+$kolom_transaksi = [
+    'metode_pembayaran' => 'VARCHAR(50) NULL',
+    'status_pembayaran' => "VARCHAR(20) NULL DEFAULT 'Pending'",
+    'waktu_transaksi' => 'DATETIME NULL DEFAULT NULL',
+    'ref_pembayaran' => 'VARCHAR(100) NULL',
+    'alamat_pengiriman' => 'TEXT NULL',
+    'no_telepon' => 'VARCHAR(30) NULL',
+    'catatan_pengiriman' => 'TEXT NULL',
+    'duitku_reference' => 'VARCHAR(100) NULL',
+    'duitku_url' => 'TEXT NULL'
+];
+foreach ($kolom_transaksi as $namaKolom => $definisiKolom) {
+    $cek = mysqli_query($conn, "SHOW COLUMNS FROM tbl_transaksi LIKE '" . mysqli_real_escape_string($conn, $namaKolom) . "'");
+    if ($cek && mysqli_num_rows($cek) === 0) {
+        @mysqli_query($conn, "ALTER TABLE tbl_transaksi ADD COLUMN `$namaKolom` $definisiKolom");
+    }
 }
 
 // Otomatis pastikan Trigger Validasi Stok sebelum transaksi (mencegah stok minus / checkout melebihi stok)
@@ -114,6 +148,85 @@ function isPelanggan() {
     if (!isset($_SESSION['role'])) return false;
     $r = strtolower(trim($_SESSION['role']));
     return ($r === 'pelanggan' || $r === 'customer' || $r === 'member');
+}
+
+function getIdPelangganLogin() {
+    global $conn;
+
+    if (!isPelanggan() || empty($_SESSION['id_user'])) {
+        return 0;
+    }
+
+    $id_user = (int)$_SESSION['id_user'];
+    $q_user = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_users WHERE id_user = $id_user LIMIT 1");
+    if (!$q_user) {
+        error_log('Gagal membaca relasi pelanggan akun: ' . mysqli_error($conn));
+        return 0;
+    }
+
+    $user = mysqli_fetch_assoc($q_user);
+    if (!$user) {
+        return 0;
+    }
+    if ((int)($user['id_pelanggan'] ?? 0) > 0) {
+        return (int)$user['id_pelanggan'];
+    }
+
+    $q_match = mysqli_query($conn, "
+        SELECT p.id_pelanggan
+        FROM tbl_users u
+        JOIN tbl_pelanggan p ON BINARY p.nama_pelanggan = BINARY u.nama_lengkap
+        WHERE u.id_user = $id_user
+          AND LOWER(TRIM(u.role)) IN ('pelanggan', 'customer', 'member')
+          AND (SELECT COUNT(*) FROM tbl_pelanggan p2 WHERE BINARY p2.nama_pelanggan = BINARY u.nama_lengkap) = 1
+          AND (SELECT COUNT(*) FROM tbl_users u2
+               WHERE BINARY u2.nama_lengkap = BINARY u.nama_lengkap
+                 AND LOWER(TRIM(u2.role)) IN ('pelanggan', 'customer', 'member')) = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM tbl_users u3
+              WHERE u3.id_pelanggan = p.id_pelanggan AND u3.id_user <> u.id_user
+          )
+        LIMIT 1
+    ");
+    if (!$q_match) {
+        error_log('Gagal mencocokkan akun dengan data pelanggan: ' . mysqli_error($conn));
+        return 0;
+    }
+
+    $match = mysqli_fetch_assoc($q_match);
+    if (!$match) {
+        return 0;
+    }
+
+    $id_pelanggan = (int)$match['id_pelanggan'];
+    if (!mysqli_query($conn, "UPDATE tbl_users SET id_pelanggan = $id_pelanggan WHERE id_user = $id_user AND id_pelanggan IS NULL")) {
+        error_log('Gagal menyimpan relasi akun pelanggan: ' . mysqli_error($conn));
+        return 0;
+    }
+
+    $q_confirm = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_users WHERE id_user = $id_user LIMIT 1");
+    $confirmed = $q_confirm ? mysqli_fetch_assoc($q_confirm) : null;
+    return (int)($confirmed['id_pelanggan'] ?? 0) === $id_pelanggan ? $id_pelanggan : 0;
+}
+
+function statusPembayaranTampilan($status) {
+    $status = trim((string)$status);
+    $status_normal = strtolower($status);
+
+    if (in_array($status_normal, ['pending', 'menunggu pembayaran'], true)) {
+        return ['label' => 'Menunggu Pembayaran', 'class' => 'bg-amber-100 text-amber-800'];
+    }
+    if (in_array($status_normal, ['gagal', 'batal', 'dibatalkan', 'cancelled', 'canceled', 'expired', 'kadaluarsa'], true)) {
+        return ['label' => 'Transaksi Batal', 'class' => 'bg-rose-100 text-rose-800'];
+    }
+    if (in_array($status_normal, ['lunas', 'berhasil', 'paid', 'success'], true)) {
+        return ['label' => 'Selesai Dibayar', 'class' => 'bg-emerald-100 text-emerald-800'];
+    }
+
+    return [
+        'label' => $status !== '' ? $status : 'Status Belum Tersedia',
+        'class' => 'bg-slate-100 text-slate-700'
+    ];
 }
 
 /**

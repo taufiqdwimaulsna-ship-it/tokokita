@@ -74,6 +74,11 @@ if (isset($_POST['tambah_transaksi']) && !isPelanggan()) {
     if (mysqli_query($conn, "CALL sp_TambahTransaksiBaru($id_pelanggan, $id_produk, $jumlah, $diskon)")) {
         $notif_sukses = "Transaksi berhasil! Function HitungTotal & HitungDiskon dijalankan, stok otomatis berkurang.";
         while (mysqli_more_results($conn) && mysqli_next_result($conn)) {;}
+        $id_transaksi_baru = (int)mysqli_insert_id($conn);
+        if ($id_transaksi_baru > 0 && !mysqli_query($conn, "UPDATE tbl_transaksi SET waktu_transaksi = NOW() WHERE id_transaksi = $id_transaksi_baru AND waktu_transaksi IS NULL")) {
+            $notif_error = "Transaksi tersimpan, tetapi waktu transaksi gagal dicatat: " . mysqli_error($conn);
+            $notif_sukses = "";
+        }
     } else {
         $notif_error = "Gagal: " . mysqli_error($conn);
     }
@@ -90,11 +95,7 @@ $q_riwayat_saya = null;
 $data_pel_saya = null;
 
 if ($is_role_pelanggan) {
-    $escaped_nama = mysqli_real_escape_string($conn, $nama_user_login);
-    $q_pel_cari   = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan WHERE nama_pelanggan = '$escaped_nama' LIMIT 1");
-    if ($r_pel = mysqli_fetch_assoc($q_pel_cari)) {
-        $id_pel_saya = (int)$r_pel['id_pelanggan'];
-    }
+    $id_pel_saya = getIdPelangganLogin();
 
     // 4. Update / Simpan Alamat Pengiriman Sendiri oleh Pelanggan Sebelum Membuat Pesanan
     if (isset($_POST['simpan_alamat_pelanggan']) && $id_pel_saya > 0) {
@@ -648,9 +649,7 @@ $jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjan
                     </h2>
                     <p class="text-[10.5px] text-slate-400">Riwayat transaksi belanja pribadi akun <?= htmlspecialchars($nama_user_login) ?></p>
                 </div>
-                <span class="text-[10px] font-extrabold bg-rose-50 text-[#ee4d2d] px-2.5 py-0.5 rounded-full border border-rose-200/60">
-                    Akun Pembeli
-                </span>
+                <a href="pesanan_saya.php" class="text-[10px] font-extrabold text-indigo-600 hover:underline">Lihat Semua Riwayat →</a>
             </div>
 
             <?php if ($q_riwayat_saya && mysqli_num_rows($q_riwayat_saya) > 0): ?>
@@ -659,20 +658,24 @@ $jml_keranjang_aktif = isset($_SESSION['keranjang']) ? count($_SESSION['keranjan
                     <thead>
                         <tr class="bg-slate-50/80 text-slate-400 uppercase tracking-wider text-[10px] font-extrabold border-b border-slate-200">
                             <th class="p-3">No Transaksi</th>
-                            <th class="p-3">Tanggal</th>
+                            <th class="p-3">Tanggal & Jam</th>
                             <th class="p-3">Total Pembayaran</th>
                             <th class="p-3 text-center">Status</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100">
                         <?php while ($trx = mysqli_fetch_assoc($q_riwayat_saya)): ?>
+                        <?php $status_trx_tampilan = statusPembayaranTampilan($trx['status_pembayaran'] ?? ''); ?>
                         <tr class="hover:bg-slate-50/80 transition">
                             <td class="p-3 font-mono font-bold text-indigo-600">#TRX-<?= str_pad($trx['id_transaksi'], 4, '0', STR_PAD_LEFT) ?></td>
-                            <td class="p-3 font-medium text-slate-600"><?= $trx['tanggal'] ?></td>
+                            <td class="p-3 font-medium text-slate-600">
+                                <?= htmlspecialchars($trx['tanggal']) ?>
+                                <span class="block text-[10px] text-slate-400"><?= !empty($trx['waktu_transaksi']) ? date('H:i:s', strtotime($trx['waktu_transaksi'])) : 'Jam belum tercatat' ?></span>
+                            </td>
                             <td class="p-3 font-black text-emerald-600"><?= rupiah($trx['total_belanja']) ?></td>
                             <td class="p-3 text-center">
-                                <span class="px-2.5 py-0.5 text-[10px] rounded-full font-black bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                    Selesai
+                                <span class="px-2.5 py-0.5 text-[10px] rounded-full font-black <?= $status_trx_tampilan['class'] ?>">
+                                    <?= htmlspecialchars($status_trx_tampilan['label'], ENT_QUOTES, 'UTF-8') ?>
                                 </span>
                             </td>
                         </tr>

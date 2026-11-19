@@ -59,9 +59,10 @@ if ($data_trx) {
     $item_belanja = mysqli_fetch_all($q_detail, MYSQLI_ASSOC);
 }
 
-// Format Tanggal Struk (dd.mm.yyyy/hh:mm:ss)
-$tgl_db = $data_trx ? $data_trx['tanggal'] : date('Y-m-d');
-$waktu_struk = date('d.m.Y', strtotime($tgl_db)) . '/' . date('H:i:s');
+// Tampilkan waktu transaksi aktual; transaksi lama mungkin belum memiliki jam tercatat.
+$waktu_struk = !empty($data_trx['waktu_transaksi'])
+    ? date('d.m.Y/H:i:s', strtotime($data_trx['waktu_transaksi']))
+    : date('d.m.Y', strtotime($data_trx ? $data_trx['tanggal'] : date('Y-m-d'))) . '/Jam tidak tercatat';
 
 // Kasir Aktif
 $nama_kasir = isset($_SESSION['nama_lengkap']) ? $_SESSION['nama_lengkap'] : 'Ursula';
@@ -96,8 +97,12 @@ $q_all_trx = mysqli_query($conn, "
 
 // Kelas lebar preview di layar
 $width_class = "max-w-[420px]";
+$print_page_width = '80mm';
+$print_receipt_width = '72mm';
 if ($lebar === '58') {
     $width_class = "max-w-[260px] text-[10px]";
+    $print_page_width = '58mm';
+    $print_receipt_width = '48mm';
 } elseif ($lebar === '80') {
     $width_class = "max-w-[340px] text-xs";
 } else {
@@ -140,8 +145,8 @@ if ($lebar === '58') {
 
         /* HAPUS SEMUA MARGIN DAN RUANG KOSONG BERLEBIH SAAT CETAK */
         @page {
-            margin: 0mm !important;
-            size: auto !important;
+            size: <?= $print_page_width ?> auto;
+            margin: 0;
         }
 
         @media print {
@@ -171,17 +176,16 @@ if ($lebar === '58') {
                 display: block !important;
             }
 
-            /* Struk mengisi 100% lebar kertas thermal secara pas tanpa sisa */
             .paper-receipt {
-                width: 100% !important;
-                max-width: 100% !important;
-                min-width: 100% !important;
+                width: <?= $print_receipt_width ?> !important;
+                max-width: <?= $print_receipt_width ?> !important;
+                min-width: 0 !important;
                 box-sizing: border-box !important;
                 height: auto !important;
                 min-height: 0 !important;
                 max-height: max-content !important;
-                margin: 0 !important;
-                padding: 2mm 3mm 4mm 3mm !important;
+                margin: 0 auto !important;
+                padding: 2mm 0 4mm !important;
                 box-shadow: none !important;
                 border: none !important;
                 border-radius: 0 !important;
@@ -194,7 +198,7 @@ if ($lebar === '58') {
 <body class="wood-desk min-h-screen text-slate-800 font-sans p-2 sm:p-4 md:p-6 flex flex-col items-center justify-start">
 
     <!-- Navigasi & Kontrol Atas (Tidak ikut tercetak) -->
-    <div class="no-print w-full max-w-xl mb-4 space-y-3">
+    <div class="no-print w-full max-w-7xl mb-4 space-y-3">
         <?php include 'navbar.php'; ?>
 
         <!-- Toolbar Atas -->

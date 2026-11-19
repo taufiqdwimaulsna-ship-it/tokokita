@@ -1,10 +1,13 @@
 <?php
 require_once 'functions.php';
+require_once 'duitku_config.php';
 batasiAksesPelanggan();
 
 $notif = "";
 $error = "";
 $last_trx_id = 0;
+$hasil_metode_duitku = ambilMetodePembayaranDuitku(20000);
+$metode_duitku_pos = $hasil_metode_duitku['status'] ? $hasil_metode_duitku['methods'] : [];
 
 // Transaksi Instan 1 Klik via Stored Procedure sp_TambahTransaksiBaru dengan Pengecekan Stok Ketat
 if (isset($_POST['bayar_instan'])) {
@@ -12,10 +15,37 @@ if (isset($_POST['bayar_instan'])) {
     $id_prd = (int)$_POST['id_produk'];
     $qty    = max(1, (int)$_POST['jumlah']);
     $disc   = (float)$_POST['diskon'];
+    $metode_pos = isset($_POST['metode_pos']) ? trim($_POST['metode_pos']) : 'Tunai';
+    $map_duitku = [
+        'QRIS'         => 'NQ',
+        'QRIS Instan'  => 'NQ',
+        'DANA'         => 'DA',
+        'ShopeePay'    => 'SP',
+        'OVO'          => 'OV',
+        'Transfer BCA' => 'BC',
+        'Transfer BRI' => 'BR',
+        'NQ'           => 'NQ',
+        'DA'           => 'DA',
+        'SP'           => 'SP',
+        'OV'           => 'OV',
+        'BC'           => 'BC',
+        'BR'           => 'BR'
+    ];
+    $kode_channel = $map_duitku[$metode_pos] ?? (isMetodeDuitku($metode_pos) ? strtoupper($metode_pos) : null);
 
     // Cek Stok Produk Terkini (Mencegah Checkout Melebihi Stok)
     $q_stk_pos = mysqli_query($conn, "SELECT nama_produk, stok FROM tbl_produk WHERE id_produk = $id_prd");
     $r_stk_pos = mysqli_fetch_assoc($q_stk_pos);
+    $total_estimasi_pos = 0;
+    if ($r_stk_pos) {
+        $q_total_estimasi = mysqli_query($conn, "SELECT (harga * $qty - HitungDiskon(harga * $qty, $disc)) AS total FROM tbl_produk WHERE id_produk = $id_prd");
+        $r_total_estimasi = mysqli_fetch_assoc($q_total_estimasi);
+        $total_estimasi_pos = $r_total_estimasi ? (float)$r_total_estimasi['total'] : 0;
+    }
+    $metode_aktif_pos = null;
+    if ($kode_channel !== null && duitku_konfigurasi_siap()) {
+        $metode_aktif_pos = ambilMetodePembayaranDuitku($total_estimasi_pos);
+    }
 
     if (!$r_stk_pos) {
         $error = "Produk tidak ditemukan dalam sistem!";
@@ -23,22 +53,60 @@ if (isset($_POST['bayar_instan'])) {
         $error = "Transaksi gagal: Stok '{$r_stk_pos['nama_produk']}' saat ini sudah habis (0 unit)!";
     } elseif ($qty > $r_stk_pos['stok']) {
         $error = "Transaksi ditolak! Jumlah yang diminta ($qty unit) melebihi stok yang tersedia ({$r_stk_pos['stok']} unit) untuk '{$r_stk_pos['nama_produk']}'!";
+    } elseif ($kode_channel !== null && validasiBatasNominalDuitku($kode_channel, $total_estimasi_pos) !== '') {
+        $error = validasiBatasNominalDuitku($kode_channel, $total_estimasi_pos);
+    } elseif ($kode_channel !== null && !duitku_konfigurasi_siap()) {
+        $error = "Konfigurasi Duitku belum siap. Periksa duitku_config.php.";
+    } elseif ($kode_channel !== null && empty($metode_aktif_pos['status'])) {
+        $error = $metode_aktif_pos['pesan'] ?? 'Gagal memeriksa metode pembayaran Duitku.';
+    } elseif ($kode_channel !== null && !isset($metode_aktif_pos['methods'][$kode_channel])) {
+        $error = 'Metode pembayaran Duitku ' . namaMetodeDuitku($kode_channel) . ' tidak aktif untuk nominal transaksi ini.';
+    } elseif (!in_array($metode_pos, ['Tunai', 'Saldo TokoKita'], true) && $kode_channel === null) {
+        $error = "Metode pembayaran tidak valid. Pilih metode yang tersedia.";
     } else {
-        if (mysqli_query($conn, "CALL sp_TambahTransaksiBaru($id_pel, $id_prd, $qty, $disc)")) {
+if (mysqli_query($conn, "CALL sp_TambahTransaksiBaru($id_pel, $id_prd, $qty, $disc)")) {
             while (mysqli_more_results($conn) && mysqli_next_result($conn)) {;}
             
-            $q_last = mysqli_query($conn, "SELECT id_transaksi FROM tbl_transaksi ORDER BY id_transaksi DESC LIMIT 1");
+            $q_last = mysqli_query($conn, "SELECT id_transaksi, total_belanja FROM tbl_transaksi ORDER BY id_transaksi DESC LIMIT 1");
+            $total_pos = 0;
             if ($r_last = mysqli_fetch_assoc($q_last)) {
                 $last_trx_id = (int)$r_last['id_transaksi'];
+                $total_pos   = (int)round((float)$r_last['total_belanja']);
+                if (!mysqli_query($conn, "UPDATE tbl_transaksi SET waktu_transaksi = NOW() WHERE id_transaksi = $last_trx_id AND waktu_transaksi IS NULL")) {
+                    $error = "Transaksi tersimpan, tetapi waktu transaksi gagal dicatat: " . mysqli_error($conn);
+                }
             }
 
-            // Perbarui metode bayar transaksi sesuai pilihan kasir
-            if (isset($_POST['metode_pos'])) {
-                $metode_pos = mysqli_real_escape_string($conn, $_POST['metode_pos']);
-                mysqli_query($conn, "UPDATE tbl_transaksi SET metode_pembayaran = '$metode_pos' WHERE id_transaksi = $last_trx_id");
-            }
+            if ($kode_channel !== null && $error === '') {
 
-            $notif = "Transaksi Kasir POS Berhasil! Stok produk '{$r_stk_pos['nama_produk']}' otomatis terpotong {$qty} unit oleh Trigger Database.";
+                if (!duitku_konfigurasi_siap()) {
+                    $error = "Konfigurasi Duitku belum siap. Periksa duitku_config.php.";
+                } elseif ($error === '') {
+                    $r_pel = mysqli_fetch_assoc(mysqli_query($conn, "SELECT nama_pelanggan FROM tbl_pelanggan WHERE id_pelanggan = $id_pel"));
+                    $nama_pembeli = $r_pel['nama_pelanggan'] ?? 'Pelanggan POS';
+
+                    $duitku = buatTransaksiDuitku("TRX-" . $last_trx_id, $total_pos, $kode_channel, "Kasir POS #$last_trx_id", $nama_pembeli);
+
+                    if ($duitku['status']) {
+                        $ref_id  = mysqli_real_escape_string($conn, $duitku['reference']);
+                        $ref_url = mysqli_real_escape_string($conn, $duitku['paymentUrl']);
+
+                        if (!mysqli_query($conn, "UPDATE tbl_transaksi SET metode_pembayaran = '$kode_channel', status_pembayaran = 'Pending', ref_pembayaran = '$ref_id', duitku_reference = '$ref_id', duitku_url = '$ref_url' WHERE id_transaksi = $last_trx_id")) {
+                            $error = "Invoice Duitku berhasil dibuat, tetapi gagal menyimpan transaksi: " . mysqli_error($conn);
+                        } else {
+                            header("Location: " . $duitku['paymentUrl']);
+                            exit;
+                        }
+
+                    } else {
+                        $error = "Transaksi #$last_trx_id tersimpan, namun gagal membuat invoice Duitku: " . $duitku['pesan'];
+                    }
+                }
+            } else {
+                // Jika Tunai atau Saldo TokoKita (Non-Duitku)
+                mysqli_query($conn, "UPDATE tbl_transaksi SET metode_pembayaran = '$metode_pos', status_pembayaran = 'Lunas' WHERE id_transaksi = $last_trx_id");
+                $notif = "Transaksi Kasir POS Berhasil! Stok produk '{$r_stk_pos['nama_produk']}' otomatis terpotong {$qty} unit oleh Trigger Database.";
+            }
         } else {
             $error = "Gagal memproses transaksi: " . mysqli_error($conn);
         }
@@ -335,15 +403,30 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
                         </button>
                     </div>
 
-                    <select id="selectMetodePOS" name="metode_pos" class="w-full border border-slate-200 bg-white p-2 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <select id="selectMetodePOS" name="metode_pos" onchange="hitungTotalExpress()" class="w-full border border-slate-200 bg-white p-2 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                         <option value="Tunai">Tunai (Cash)</option>
-                        <option value="QRIS">QRIS Instan (BCA/Dana/Gopay)</option>
-                        <option value="DANA">DANA Dompet Digital</option>
-                        <option value="ShopeePay">ShopeePay</option>
-                        <option value="OVO">OVO Payment</option>
-                        <option value="Transfer BCA">Transfer Bank BCA</option>
                         <option value="Saldo TokoKita">Saldo Dompet TokoKita</option>
+                        <?php if ($metode_duitku_pos): ?>
+                            <?php
+                            $grup_metode_pos = '';
+                            foreach ($metode_duitku_pos as $metode):
+                                if ($metode['group'] !== $grup_metode_pos):
+                                    if ($grup_metode_pos !== '') echo '</optgroup>';
+                                    $grup_metode_pos = $metode['group'];
+                            ?>
+                                    <optgroup label="<?= htmlspecialchars($grup_metode_pos) ?> — Duitku">
+                                <?php endif; ?>
+                                <option value="<?= htmlspecialchars($metode['code']) ?>"><?= htmlspecialchars($metode['name']) ?></option>
+                            <?php endforeach; ?>
+                            <?php if ($grup_metode_pos !== '') echo '</optgroup>'; ?>
+                        <?php endif; ?>
                     </select>
+                    <?php if (!$hasil_metode_duitku['status']): ?>
+                        <p class="text-[10px] font-semibold text-amber-700"><?= htmlspecialchars($hasil_metode_duitku['pesan']) ?> Tunai dan Saldo TokoKita tetap tersedia.</p>
+                    <?php endif; ?>
+                    <p id="pesanBatasDuitkuPOS" class="hidden rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-[10px] font-bold text-rose-700">
+                        QRIS maksimal Rp 10.000.000. Pilih metode lain untuk nominal ini.
+                    </p>
 
                     <input type="hidden" id="hiddenRefPOS" name="ref_barcode_pos" value="">
                     <div id="badgeScannedPOS" class="hidden bg-emerald-100 text-emerald-800 p-2 rounded-xl text-[11px] font-bold flex items-center justify-between border border-emerald-300">
@@ -651,6 +734,9 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
             document.getElementById('labelHarga').innerText = fmt(harga);
             document.getElementById('labelPotongan').innerText = '-' + fmt(potongan);
             document.getElementById('labelTotal').innerText = fmt(total);
+            const metode = document.getElementById('selectMetodePOS').value;
+            const pesanBatas = document.getElementById('pesanBatasDuitkuPOS');
+            pesanBatas.classList.toggle('hidden', !(['NQ', 'SP'].includes(metode) && total > 10000000));
         }
 
         // ==============================================================
@@ -1069,7 +1155,23 @@ $q_kat = mysqli_query($conn, "SELECT * FROM tbl_kategori ORDER BY nama_kategori 
             if (!txt) return;
             playScannerBeep();
             const p = parsePaymentBarcode(txt);
-            document.getElementById('selectMetodePOS').value = p.metode;
+            const metodeDuitku = {
+                'QRIS': 'NQ',
+                'DANA': 'DA',
+                'ShopeePay': 'SP',
+                'OVO': 'OV',
+                'Transfer BCA': 'BC',
+                'Transfer BRI': 'BR',
+                'Saldo TokoKita': 'Saldo TokoKita'
+            };
+            const metode = metodeDuitku[p.metode] || 'NQ';
+            const selectMetode = document.getElementById('selectMetodePOS');
+            if (!Array.from(selectMetode.options).some(option => option.value === metode)) {
+                tampilkanToast('Kanal pembayaran hasil scan tidak tersedia.', 'error');
+                return;
+            }
+            selectMetode.value = metode;
+            hitungTotalExpress();
             document.getElementById('hiddenRefPOS').value = p.raw;
 
             const badge = document.getElementById('badgeScannedPOS');

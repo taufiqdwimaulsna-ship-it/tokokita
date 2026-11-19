@@ -1,5 +1,6 @@
 <?php
 require_once 'functions.php';
+require_once 'duitku_config.php';
 cekLogin();
 
 if (!isset($_SESSION['keranjang'])) {
@@ -8,7 +9,11 @@ if (!isset($_SESSION['keranjang'])) {
 
 $notif_sukses = "";
 $notif_error  = "";
-$nominal_bayar_input = "";
+$hasil_metode_pembayaran = ambilMetodePembayaranDuitku(20000);
+$metode_pembayaran_duitku = $hasil_metode_pembayaran['status'] ? $hasil_metode_pembayaran['methods'] : [];
+$metode_default_checkout = isset($metode_pembayaran_duitku['NQ'])
+    ? 'NQ'
+    : (!empty($metode_pembayaran_duitku) ? key($metode_pembayaran_duitku) : 'COD (Bayar di Tempat)');
 
 // 1. Tambah Item ke Keranjang Session dengan Pengecekan Stok Ketat
 if (isset($_POST['masuk_keranjang'])) {
@@ -103,20 +108,7 @@ if (isset($_GET['kosongkan'])) {
 }
 
 // Cari ID Pelanggan dari session login jika role Pelanggan
-$id_pel_login = 0;
-if (isPelanggan()) {
-    $nama_user = mysqli_real_escape_string($conn, $_SESSION['nama_lengkap']);
-    $qp = mysqli_query($conn, "SELECT id_pelanggan FROM tbl_pelanggan WHERE nama_pelanggan = '$nama_user' LIMIT 1");
-    if ($rp = mysqli_fetch_assoc($qp)) {
-        $id_pel_login = (int)$rp['id_pelanggan'];
-    } else {
-        // Otomatis sinkronkan member baru ke tbl_pelanggan
-        mysqli_query($conn, "INSERT INTO tbl_pelanggan (nama_pelanggan, kota) VALUES ('$nama_user', 'Ponorogo')");
-        $id_pel_login = mysqli_insert_id($conn);
-        // Bonus saldo awal member baru
-        mysqli_query($conn, "INSERT INTO tbl_topup (id_pelanggan, nominal, metode, status) VALUES ($id_pel_login, 100000, 'Bonus Registrasi Member', 'Berhasil')");
-    }
-}
+$id_pel_login = isPelanggan() ? getIdPelangganLogin() : 0;
 
 // Ambil Saldo Dompet Digital Pelanggan & Profil Alamat Pengiriman
 $saldo_pelanggan_login = 0;
@@ -136,17 +128,80 @@ $telepon_profil_default = $data_pel_login['no_telepon'] ?? '';
 $kota_profil_default    = $data_pel_login['kota'] ?? '';
 
 $data_sukses_checkout = null;
+$return_owner_filter = isPelanggan() ? "AND id_pelanggan = $id_pel_login" : '';
+
+// Duitku redirects back with resultCode; confirm the result server-to-server before showing success.
+if (
+    isset($_GET['merchantOrderId'], $_GET['resultCode'], $_GET['reference'])
+    && preg_match('/^TRX-(\d+)$/', (string)$_GET['merchantOrderId'], $orderMatch)
+    && $_GET['resultCode'] === '00'
+) {
+    $return_trx_id = (int)$orderMatch[1];
+    $return_reference = trim((string)$_GET['reference']);
+    $q_return_trx = mysqli_query($conn, "SELECT * FROM tbl_transaksi WHERE id_transaksi = $return_trx_id $return_owner_filter LIMIT 1");
+    $return_trx = $q_return_trx ? mysqli_fetch_assoc($q_return_trx) : null;
+
+    if ($return_trx && !empty($return_trx['duitku_reference']) && hash_equals($return_trx['duitku_reference'], $return_reference)) {
+        $status_duitku = cekStatusTransaksiDuitku((string)$_GET['merchantOrderId']);
+        $nominal_terverifikasi = $status_duitku['status'] && isset($status_duitku['amount'])
+            ? (int)round((float)$status_duitku['amount'])
+            : -1;
+        $ref_terverifikasi = $status_duitku['status'] ? (string)($status_duitku['reference'] ?? '') : '';
+
+        if (
+            $status_duitku['status']
+            && (string)$status_duitku['statusCode'] === '00'
+            && $nominal_terverifikasi === (int)round((float)$return_trx['total_belanja'])
+            && hash_equals($return_trx['duitku_reference'], $ref_terverifikasi)
+        ) {
+            $refEsc = mysqli_real_escape_string($conn, $ref_terverifikasi);
+            $update_return = mysqli_query($conn, "UPDATE tbl_transaksi SET status_pembayaran='Lunas', ref_pembayaran='$refEsc', duitku_reference='$refEsc' WHERE id_transaksi=$return_trx_id $return_owner_filter");
+            if ($update_return) {
+                $metode_transaksi = $return_trx['metode_pembayaran'] ?? 'Duitku';
+                $data_sukses_checkout = [
+                    'id_transaksi' => $return_trx_id,
+                    'total_belanja' => (float)$return_trx['total_belanja'],
+                    'nominal_bayar' => (float)$return_trx['total_belanja'],
+                    'metode_bayar' => namaMetodeDuitku($metode_transaksi, $metode_transaksi),
+                    'status_bayar' => 'Lunas',
+                    'ref_barcode' => $ref_terverifikasi,
+                    'alamat_pengiriman' => $return_trx['alamat_pengiriman'] ?? '',
+                    'no_telepon' => $return_trx['no_telepon'] ?? '',
+                    'catatan_pengiriman' => $return_trx['catatan_pengiriman'] ?? ''
+                ];
+                $_SESSION['keranjang'] = [];
+                $notif_sukses = 'Pembayaran Duitku berhasil dan telah terverifikasi.';
+            } else {
+                $notif_error = 'Pembayaran terverifikasi oleh Duitku, tetapi status transaksi gagal diperbarui: ' . mysqli_error($conn);
+            }
+        } else {
+            $notif_error = 'Pembayaran belum terverifikasi sebagai lunas. Periksa kembali status transaksi atau hubungi admin.';
+        }
+    } elseif ($return_trx) {
+        $notif_error = 'Referensi pembayaran tidak cocok dengan transaksi ini.';
+    }
+}
 
 // 4. Proses Checkout Keranjang dengan Validasi Stok Ketat & Metode Pembayaran Lengkap
 if (isset($_POST['checkout_keranjang'])) {
-    if (empty($_SESSION['keranjang'])) {
+    if (isPelanggan() && $id_pel_login <= 0) {
+        $notif_error = 'Akun pelanggan belum terhubung dengan data member. Hubungi kasir sebelum checkout.';
+    } elseif (empty($_SESSION['keranjang'])) {
         $notif_error = "Keranjang belanja Anda masih kosong! Silakan pilih produk terlebih dahulu.";
     } else {
         $id_pelanggan      = isPelanggan() ? $id_pel_login : (int)$_POST['id_pelanggan'];
         $diskon_persen     = (float)$_POST['diskon_persen'];
         $metode_bayar      = isset($_POST['metode_pembayaran']) ? mysqli_real_escape_string($conn, trim($_POST['metode_pembayaran'])) : 'QRIS Instan';
+        $metode_duitku_map = [
+            'QRIS Instan' => 'NQ',
+            'SPayLater / ShopeePay' => 'SP',
+            'DANA Dompet Digital' => 'DA',
+            'Virtual Account BCA' => 'BC'
+        ];
+        if (isset($metode_duitku_map[$metode_bayar])) {
+            $metode_bayar = $metode_duitku_map[$metode_bayar];
+        }
         $ref_bayar         = isset($_POST['ref_pembayaran']) && !empty($_POST['ref_pembayaran']) ? mysqli_real_escape_string($conn, trim($_POST['ref_pembayaran'])) : '';
-        $nominal_bayar_input = isset($_POST['nominal_bayar']) ? trim((string)$_POST['nominal_bayar']) : '';
         $alamat_pengiriman = isset($_POST['alamat_pengiriman']) ? mysqli_real_escape_string($conn, trim($_POST['alamat_pengiriman'])) : '';
         $no_telepon        = isset($_POST['no_telepon']) ? mysqli_real_escape_string($conn, trim($_POST['no_telepon'])) : '';
         $catatan_kirim     = isset($_POST['catatan_pengiriman']) ? mysqli_real_escape_string($conn, trim($_POST['catatan_pengiriman'])) : '';
@@ -214,16 +269,31 @@ if (isset($_POST['checkout_keranjang'])) {
         ");
         $kalkulasi = mysqli_fetch_assoc($q_hitung);
         $total_bersih = $kalkulasi['total_bersih'];
-        $nominal_bayar = filter_var($nominal_bayar_input, FILTER_VALIDATE_INT);
-        $total_tagihan_bulat = (int)round((float)$total_bersih);
+       $total_tagihan_bulat = (int)round((float)$total_bersih);
+        $is_gateway = isMetodeDuitku($metode_bayar);
+        if (!$is_gateway && !in_array($metode_bayar, ['Saldo TokoKita Pay', 'COD (Bayar di Tempat)'], true)) {
+            $notif_error = 'Metode pembayaran tidak valid. Pilih metode yang tersedia.';
+        }
 
-        if (empty($notif_error)) {
-            if ($nominal_bayar === false) {
-                $notif_error = "Masukkan nominal pembayaran dalam angka bulat.";
-            } elseif ($nominal_bayar < $total_tagihan_bulat) {
-                $notif_error = "Nominal pembayaran tidak boleh kurang dari total tagihan " . rupiah($total_bersih) . ".";
+        $pesan_batas_duitku = validasiBatasNominalDuitku($metode_bayar, $total_tagihan_bulat);
+        if ($pesan_batas_duitku !== '') {
+            $notif_error = $pesan_batas_duitku;
+        }
+        if ($is_gateway && empty($notif_error)) {
+            if (!duitku_konfigurasi_siap()) {
+                $notif_error = 'Konfigurasi Duitku belum siap. Periksa DUITKU_MERCHANT_CODE dan DUITKU_API_KEY.';
+            } else {
+                $metode_aktif_checkout = ambilMetodePembayaranDuitku($total_tagihan_bulat);
+                if (empty($metode_aktif_checkout['status'])) {
+                    $notif_error = $metode_aktif_checkout['pesan'] ?? 'Gagal memeriksa metode pembayaran Duitku.';
+                } elseif (!isset($metode_aktif_checkout['methods'][$metode_bayar])) {
+                    $notif_error = 'Metode pembayaran ' . namaMetodeDuitku($metode_bayar) . ' tidak aktif untuk nominal transaksi ini.';
+                }
             }
         }
+        $is_cod = (strpos($metode_bayar, 'COD') !== false);
+
+        $nominal_bayar = $total_tagihan_bulat;
 
         // 3. Validasi Saldo Dompet jika bayar pakai Saldo TokoKita Pay
         if (empty($notif_error) && strpos($metode_bayar, 'Saldo') !== false) {
@@ -239,13 +309,13 @@ if (isset($_POST['checkout_keranjang'])) {
 
         // Eksekusi Transaksi Database (TCL COMMIT & ROLLBACK)
         if (empty($notif_error)) {
-            $status_bayar = (strpos($metode_bayar, 'COD') !== false) ? 'Menunggu Pembayaran' : 'Lunas';
+            $status_bayar = $is_gateway ? 'Pending' : ((strpos($metode_bayar, 'COD') !== false) ? 'Menunggu Pembayaran' : 'Lunas');
 
             mysqli_begin_transaction($conn);
 
             $ok_header = mysqli_query($conn, "
-                INSERT INTO tbl_transaksi (tanggal, id_pelanggan, total_belanja, metode_pembayaran, status_pembayaran, ref_pembayaran, alamat_pengiriman, no_telepon, catatan_pengiriman) 
-                VALUES (CURDATE(), $id_pelanggan, $total_bersih, '$metode_bayar', '$status_bayar', '$ref_bayar', '$alamat_pengiriman', '$no_telepon', '$catatan_kirim')
+                INSERT INTO tbl_transaksi (tanggal, waktu_transaksi, id_pelanggan, total_belanja, metode_pembayaran, status_pembayaran, ref_pembayaran, alamat_pengiriman, no_telepon, catatan_pengiriman)
+                VALUES (CURDATE(), NOW(), $id_pelanggan, $total_bersih, '$metode_bayar', '$status_bayar', '$ref_bayar', '$alamat_pengiriman', '$no_telepon', '$catatan_kirim')
             ");
             $id_trx_baru = mysqli_insert_id($conn);
 
@@ -290,31 +360,58 @@ if (isset($_POST['checkout_keranjang'])) {
                     $telepon_profil_default = $no_telepon;
                 }
 
-                mysqli_commit($conn);
-                $items_count_checkout = count($_SESSION['keranjang']);
-                $_SESSION['keranjang'] = [];
+                if ($is_gateway) {
+                    if (!duitku_konfigurasi_siap()) {
+                        mysqli_rollback($conn);
+                        $notif_error = "Konfigurasi Duitku belum lengkap. Isi DUITKU_MERCHANT_CODE dan DUITKU_API_KEY.";
+                    } else {
+                        $r_pel_duitku = mysqli_fetch_assoc(mysqli_query($conn, "SELECT nama_pelanggan FROM tbl_pelanggan WHERE id_pelanggan = $id_pelanggan"));
+                        $nama_pembeli = $r_pel_duitku['nama_pelanggan'] ?? 'Pelanggan TokoKita';
+                        $duitku = buatTransaksiDuitku("TRX-" . $id_trx_baru, $total_bersih, $metode_bayar, "Belanja TokoKita #$id_trx_baru", $nama_pembeli);
 
-                $data_sukses_checkout = [
-                    'id_transaksi'       => $id_trx_baru,
-                    'total_belanja'      => $total_bersih,
-                    'nominal_bayar'      => $nominal_bayar,
-                    'metode_bayar'       => $metode_bayar,
-                    'status_bayar'       => $status_bayar,
-                    'ref_barcode'        => $ref_bayar,
-                    'items_count'        => $items_count_checkout,
-                    'alamat_pengiriman'  => $alamat_pengiriman,
-                    'no_telepon'         => $no_telepon,
-                    'catatan_pengiriman' => $catatan_kirim
-                ];
+                        if ($duitku['status']) {
+                            $ref_url = mysqli_real_escape_string($conn, $duitku['paymentUrl']);
+                            $ref_id = mysqli_real_escape_string($conn, $duitku['reference']);
+                            $update_duitku = mysqli_query($conn, "UPDATE tbl_transaksi SET status_pembayaran='Pending', ref_pembayaran='$ref_id', duitku_reference='$ref_id', duitku_url='$ref_url' WHERE id_transaksi=$id_trx_baru");
+                            if ($update_duitku) {
+                                mysqli_commit($conn);
+                                $_SESSION['keranjang'] = [];
+                                header("Location: " . $duitku['paymentUrl']);
+                                exit;
+                            }
+                            mysqli_rollback($conn);
+                            $notif_error = "Gagal menyimpan data invoice Duitku.";
+                        } else {
+                            mysqli_rollback($conn);
+                            $notif_error = "Gagal membuat invoice Duitku: " . $duitku['pesan'];
+                        }
+                    }
+                } else {
+                    mysqli_commit($conn);
+                    $items_count_checkout = count($_SESSION['keranjang']);
+                    $_SESSION['keranjang'] = [];
 
-                $notif_sukses = "Pembayaran Berhasil! Transaksi #TRX-" . str_pad($id_trx_baru, 4, '0', STR_PAD_LEFT) . " telah dikonfirmasi via $metode_bayar. Stok produk berhasil dipotong otomatis.";
-                mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_transaksi', 'CHECKOUT PELANGGAN', 'Transaksi #$id_trx_baru via $metode_bayar total " . rupiah($total_bersih) . " ke alamat: $alamat_pengiriman')");
+                    $data_sukses_checkout = [
+                        'id_transaksi'       => $id_trx_baru,
+                        'total_belanja'      => $total_bersih,
+                        'nominal_bayar'      => $nominal_bayar,
+                        'metode_bayar'       => $metode_bayar,
+                        'status_bayar'       => $status_bayar,
+                        'ref_barcode'        => $ref_bayar,
+                        'items_count'        => $items_count_checkout,
+                        'alamat_pengiriman'  => $alamat_pengiriman,
+                        'no_telepon'         => $no_telepon,
+                        'catatan_pengiriman' => $catatan_kirim
+                    ];
 
-                // Perbarui saldo pelanggan setelah transaksi
-                if ($id_pel_login > 0) {
-                    $q_saldo_new = mysqli_query($conn, "SELECT COALESCE(SUM(nominal), 0) AS total_saldo FROM tbl_topup WHERE id_pelanggan = $id_pel_login AND status = 'Berhasil'");
-                    if ($r_sn = mysqli_fetch_assoc($q_saldo_new)) {
-                        $saldo_pelanggan_login = (float)$r_sn['total_saldo'];
+                    $notif_sukses = "Pembayaran Berhasil! Transaksi #TRX-" . str_pad($id_trx_baru, 4, '0', STR_PAD_LEFT) . " telah dikonfirmasi via $metode_bayar. Stok produk berhasil dipotong otomatis.";
+                    mysqli_query($conn, "INSERT INTO tbl_log (tabel_terkait, aksi, keterangan) VALUES ('tbl_transaksi', 'CHECKOUT PELANGGAN', 'Transaksi #$id_trx_baru via $metode_bayar total " . rupiah($total_bersih) . " ke alamat: $alamat_pengiriman')");
+
+                    if ($id_pel_login > 0) {
+                        $q_saldo_new = mysqli_query($conn, "SELECT COALESCE(SUM(nominal), 0) AS total_saldo FROM tbl_topup WHERE id_pelanggan = $id_pel_login AND status = 'Berhasil'");
+                        if ($r_sn = mysqli_fetch_assoc($q_saldo_new)) {
+                            $saldo_pelanggan_login = (float)$r_sn['total_saldo'];
+                        }
                     }
                 }
             } else {
@@ -362,15 +459,15 @@ $jml_keranjang = count($_SESSION['keranjang']);
                                 </span>
                                 <span class="text-xs font-mono font-bold text-slate-300">#TRX-<?= str_pad($data_sukses_checkout['id_transaksi'], 4, '0', STR_PAD_LEFT) ?></span>
                             </div>
-                            <h2 class="text-lg sm:text-xl font-black text-white mt-0.5">Pembayaran Berhasil Dikonfirmasi!</h2>
+                            <h2 class="text-lg sm:text-xl font-black text-white mt-0.5">
+                                <?= strpos($data_sukses_checkout['metode_bayar'], 'COD') !== false ? 'Pesanan COD Berhasil Dibuat!' : 'Pembayaran Berhasil Dikonfirmasi!' ?>
+                            </h2>
                             <p class="text-xs text-slate-300 mt-1">
                                 Metode: <span class="text-amber-400 font-black"><?= htmlspecialchars($data_sukses_checkout['metode_bayar']) ?></span> • Ref: <span class="font-mono text-emerald-400"><?= htmlspecialchars($data_sukses_checkout['ref_barcode']) ?></span>
                             </p>
                             <p class="text-xs text-slate-300 mt-1">
-                                Nominal pembayaran: <span class="font-black text-white"><?= rupiah($data_sukses_checkout['nominal_bayar']) ?></span>
-                                <?php if (strpos($data_sukses_checkout['metode_bayar'], 'COD') !== false): ?>
-                                    • Kembalian: <span class="font-black text-emerald-300"><?= rupiah($data_sukses_checkout['nominal_bayar'] - round((float)$data_sukses_checkout['total_belanja'])) ?></span>
-                                <?php endif; ?>
+                                <?= strpos($data_sukses_checkout['metode_bayar'], 'COD') !== false ? 'Tagihan saat barang diterima:' : 'Nominal pembayaran:' ?>
+                                <span class="font-black text-white"><?= rupiah($data_sukses_checkout['nominal_bayar']) ?></span>
                             </p>
                         </div>
                     </div>
@@ -575,7 +672,7 @@ $jml_keranjang = count($_SESSION['keranjang']);
                 <?php endif; ?>
 
                 <?php if (!empty($_SESSION['keranjang'])): ?>
-                <form method="POST" id="formCheckoutKeranjang" class="pt-3 border-t border-slate-100 space-y-4 text-xs">
+                <form method="POST" id="formCheckoutKeranjang" onsubmit="return validasiCheckoutDuitku()" class="pt-3 border-t border-slate-100 space-y-4 text-xs">
                     <!-- Grand Total Banner -->
                     <div class="bg-gradient-to-r from-slate-900 to-indigo-950 text-white p-4 rounded-2xl flex justify-between items-center shadow-lg border border-indigo-900/50">
                         <div>
@@ -692,95 +789,42 @@ $jml_keranjang = count($_SESSION['keranjang']);
                             </span>
                         </div>
 
-                        <!-- Grid 6 Pilihan Metode Bayar Interaktif -->
-                        <div class="grid grid-cols-2 gap-2" id="boxPilihanMetode">
-                            <!-- 1. QRIS Instan -->
-                            <label onclick="pilihMetodeBayar('QRIS Instan', this)" 
-                                class="card-metode flex items-center gap-2 p-2.5 rounded-2xl border-2 border-[#ee4d2d] bg-rose-50/40 cursor-pointer transition relative shadow-sm hover:shadow">
-                                <input type="radio" name="metode_pembayaran" value="QRIS Instan" class="sr-only" checked>
-                                <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-rose-600 to-orange-500 text-white flex items-center justify-center shrink-0">
-                                    <i data-lucide="qr-code" class="w-3.5 h-3.5"></i>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <p class="font-black text-[11px] text-slate-800 leading-tight">QRIS Instan</p>
-                                    <span class="text-[9.5px] text-slate-400 block leading-tight">Semua E-Wallet & Bank</span>
-                                </div>
-                                <i data-lucide="check-circle" class="check-icon w-3.5 h-3.5 text-[#ee4d2d] shrink-0"></i>
-                            </label>
-
-                            <!-- 2. SPayLater / ShopeePay -->
-                            <label onclick="pilihMetodeBayar('SPayLater / ShopeePay', this)" 
-                                class="card-metode flex items-center gap-2 p-2.5 rounded-2xl border-2 border-slate-200 bg-white hover:border-slate-300 cursor-pointer transition relative shadow-sm hover:shadow">
-                                <input type="radio" name="metode_pembayaran" value="SPayLater / ShopeePay" class="sr-only">
-                                <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-[#ee4d2d] to-amber-500 text-white flex items-center justify-center shrink-0">
-                                    <i data-lucide="shopping-bag" class="w-3.5 h-3.5"></i>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <p class="font-black text-[11px] text-slate-800 leading-tight">SPayLater</p>
-                                    <span class="text-[9.5px] text-amber-600 font-extrabold block leading-tight">Cicilan Pasti 0%</span>
-                                </div>
-                                <i data-lucide="check-circle" class="check-icon w-3.5 h-3.5 text-[#ee4d2d] shrink-0 hidden"></i>
-                            </label>
-
-                            <!-- 3. DANA Dompet Digital -->
-                            <label onclick="pilihMetodeBayar('DANA Dompet Digital', this)" 
-                                class="card-metode flex items-center gap-2 p-2.5 rounded-2xl border-2 border-slate-200 bg-white hover:border-slate-300 cursor-pointer transition relative shadow-sm hover:shadow">
-                                <input type="radio" name="metode_pembayaran" value="DANA Dompet Digital" class="sr-only">
-                                <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-sky-500 to-blue-600 text-white flex items-center justify-center shrink-0">
-                                    <i data-lucide="wallet" class="w-3.5 h-3.5"></i>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <p class="font-black text-[11px] text-slate-800 leading-tight">DANA</p>
-                                    <span class="text-[9.5px] text-slate-400 block leading-tight">Dompet Digital</span>
-                                </div>
-                                <i data-lucide="check-circle" class="check-icon w-3.5 h-3.5 text-[#ee4d2d] shrink-0 hidden"></i>
-                            </label>
-
-                            <!-- 4. Saldo TokoKita Pay -->
-                            <label onclick="pilihMetodeBayar('Saldo TokoKita Pay', this)" 
-                                class="card-metode flex items-center gap-2 p-2.5 rounded-2xl border-2 border-slate-200 bg-white hover:border-slate-300 cursor-pointer transition relative shadow-sm hover:shadow">
-                                <input type="radio" name="metode_pembayaran" value="Saldo TokoKita Pay" class="sr-only">
-                                <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 text-white flex items-center justify-center shrink-0">
-                                    <i data-lucide="credit-card" class="w-3.5 h-3.5"></i>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <p class="font-black text-[11px] text-slate-800 leading-tight">Saldo TokoKita</p>
-                                    <span class="text-[9.5px] text-emerald-600 font-extrabold block leading-tight"><?= rupiah($saldo_pelanggan_login) ?></span>
-                                </div>
-                                <i data-lucide="check-circle" class="check-icon w-3.5 h-3.5 text-[#ee4d2d] shrink-0 hidden"></i>
-                            </label>
-
-                            <!-- 5. Virtual Account BCA / BRI -->
-                            <label onclick="pilihMetodeBayar('Virtual Account BCA', this)" 
-                                class="card-metode flex items-center gap-2 p-2.5 rounded-2xl border-2 border-slate-200 bg-white hover:border-slate-300 cursor-pointer transition relative shadow-sm hover:shadow">
-                                <input type="radio" name="metode_pembayaran" value="Virtual Account BCA" class="sr-only">
-                                <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-indigo-600 to-blue-700 text-white flex items-center justify-center shrink-0">
-                                    <i data-lucide="landmark" class="w-3.5 h-3.5"></i>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <p class="font-black text-[11px] text-slate-800 leading-tight">Virtual Account</p>
-                                    <span class="text-[9.5px] text-slate-400 block leading-tight">BCA & BRI VA</span>
-                                </div>
-                                <i data-lucide="check-circle" class="check-icon w-3.5 h-3.5 text-[#ee4d2d] shrink-0 hidden"></i>
-                            </label>
-
-                            <!-- 6. COD (Bayar di Tempat) -->
-                            <label onclick="pilihMetodeBayar('COD (Bayar di Tempat)', this)" 
-                                class="card-metode flex items-center gap-2 p-2.5 rounded-2xl border-2 border-slate-200 bg-white hover:border-slate-300 cursor-pointer transition relative shadow-sm hover:shadow">
-                                <input type="radio" name="metode_pembayaran" value="COD (Bayar di Tempat)" class="sr-only">
-                                <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-600 text-white flex items-center justify-center shrink-0">
-                                    <i data-lucide="truck" class="w-3.5 h-3.5"></i>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <p class="font-black text-[11px] text-slate-800 leading-tight">COD</p>
-                                    <span class="text-[9.5px] text-slate-400 block leading-tight">Bayar Saat Sampai</span>
-                                </div>
-                                <i data-lucide="check-circle" class="check-icon w-3.5 h-3.5 text-[#ee4d2d] shrink-0 hidden"></i>
-                            </label>
+                        <div>
+                            <label for="selectMetodePembayaran" class="mb-1 block text-[11px] font-bold text-slate-600">Pilih kanal pembayaran:</label>
+                            <select id="selectMetodePembayaran" name="metode_pembayaran" onchange="pilihMetodeBayar(this.value)"
+                                class="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#ee4d2d]">
+                                <?php if ($metode_pembayaran_duitku): ?>
+                                    <?php
+                                    $grup_metode = '';
+                                    foreach ($metode_pembayaran_duitku as $metode):
+                                        if ($metode['group'] !== $grup_metode):
+                                            if ($grup_metode !== '') echo '</optgroup>';
+                                            $grup_metode = $metode['group'];
+                                    ?>
+                                            <optgroup label="<?= htmlspecialchars($grup_metode) ?> — Duitku">
+                                        <?php endif; ?>
+                                        <option value="<?= htmlspecialchars($metode['code']) ?>" data-group="<?= htmlspecialchars($metode['group']) ?>" <?= $metode_default_checkout === $metode['code'] ? 'selected' : '' ?>>
+                                            <?= htmlspecialchars($metode['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                    <?php if ($grup_metode !== '') echo '</optgroup>'; ?>
+                                <?php endif; ?>
+                                <optgroup label="Pembayaran TokoKita">
+                                    <option value="Saldo TokoKita Pay" <?= $metode_default_checkout === 'Saldo TokoKita Pay' ? 'selected' : '' ?>>
+                                        Saldo TokoKita Pay (<?= htmlspecialchars(rupiah($saldo_pelanggan_login)) ?>)
+                                    </option>
+                                    <option value="COD (Bayar di Tempat)" <?= $metode_default_checkout === 'COD (Bayar di Tempat)' ? 'selected' : '' ?>>
+                                        COD — Bayar di Tempat
+                                    </option>
+                                </optgroup>
+                            </select>
+                            <?php if (!$hasil_metode_pembayaran['status']): ?>
+                                <p class="mt-1 text-[10px] font-semibold text-amber-700"><?= htmlspecialchars($hasil_metode_pembayaran['pesan']) ?> Saldo TokoKita dan COD tetap tersedia.</p>
+                            <?php endif; ?>
                         </div>
 
-                        <!-- Kotak Informasi Detail Metode Bayar Terpilih -->
-                        <div id="boxInfoMetode" class="p-3 rounded-2xl border border-rose-200 bg-rose-50/50 flex items-start gap-2.5 text-[11px]">
+                                        <!-- Kotak Informasi Detail Metode Bayar Terpilih -->
+                                        <div id="boxInfoMetode" class="p-3 rounded-2xl border border-rose-200 bg-rose-50/50 flex items-start gap-2.5 text-[11px]">
                             <div class="w-6 h-6 rounded-lg bg-[#ee4d2d] text-white flex items-center justify-center shrink-0 mt-0.5">
                                 <i data-lucide="info" class="w-3.5 h-3.5"></i>
                             </div>
@@ -789,19 +833,7 @@ $jml_keranjang = count($_SESSION['keranjang']);
                                 <p class="text-slate-500 text-[10px]">Kode QRIS resmi akan otomatis di-generate dan dapat langsung di-scan tanpa jeda verifikasi manual.</p>
                             </div>
                         </div>
-                    </div>
-
-                    <!-- Nominal pembayaran -->
-                    <div class="space-y-1">
-                        <label for="inputNominalPembayaran" class="block text-xs font-bold text-slate-600">Nominal Pembayaran:</label>
-                        <input type="number" id="inputNominalPembayaran" name="nominal_bayar" min="0" step="1" required
-                            value="<?= htmlspecialchars($nominal_bayar_input, ENT_QUOTES, 'UTF-8') ?>"
-                            oninput="updateNominalPembayaran()"
-                            placeholder="Masukkan nominal pembayaran"
-                            class="w-full border border-slate-200 bg-slate-50 p-2.5 rounded-xl text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#ee4d2d] focus:bg-white transition">
-                        <p id="labelNominalPembayaran" class="text-[10px] text-slate-500">
-                            Masukkan nominal minimal sebesar total tagihan.
-                        </p>
+                        <p id="pesanBatasDuitku" class="hidden rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[10px] font-bold text-rose-700"></p>
                     </div>
 
                     <!-- Input Diskon Belanja -->
@@ -849,48 +881,34 @@ $jml_keranjang = count($_SESSION['keranjang']);
         }
 
         // Fungsi Memilih Metode Pembayaran
-        function pilihMetodeBayar(namaMetode, cardEl) {
-            // Uncheck semua dan reset border
-            document.querySelectorAll('#boxPilihanMetode .card-metode').forEach(c => {
-                c.classList.remove('border-[#ee4d2d]', 'bg-rose-50/40');
-                c.classList.add('border-slate-200', 'bg-white');
-                const check = c.querySelector('.check-icon');
-                if (check) check.classList.add('hidden');
-                const rad = c.querySelector('input[type="radio"]');
-                if (rad) rad.checked = false;
-            });
-
-            // Aktifkan kartu terpilih
-            cardEl.classList.remove('border-slate-200', 'bg-white');
-            cardEl.classList.add('border-[#ee4d2d]', 'bg-rose-50/40');
-            const checkAktif = cardEl.querySelector('.check-icon');
-            if (checkAktif) checkAktif.classList.remove('hidden');
-            const radAktif = cardEl.querySelector('input[type="radio"]');
-            if (radAktif) radAktif.checked = true;
-
-            // Perbarui Keterangan Detail Metode
+        function pilihMetodeBayar(kodeMetode) {
+            const select = document.getElementById('selectMetodePembayaran');
+            const option = select ? select.options[select.selectedIndex] : null;
+            const namaMetode = option ? option.textContent.trim() : kodeMetode;
+            const namaMetodeHtml = namaMetode.replace(/[&<>"']/g, karakter => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            })[karakter]);
+            const kelompok = option ? option.dataset.group : '';
             const infoBox = document.getElementById('kontenInfoMetode');
             const btnLabel = document.getElementById('labelTombolBayar');
 
-            if (namaMetode.includes('QRIS')) {
+            if (['NQ', 'SP'].includes(kodeMetode)) {
                 infoBox.innerHTML = `
-                    <p class="font-bold text-slate-800">QRIS Instan (BCA, DANA, GoPay, OVO, ShopeePay)</p>
-                    <p class="text-slate-500 text-[10px]">Kode QRIS resmi otomatis di-generate. Verifikasi transaksi otomatis instan tanpa antre.</p>
+                    <p class="font-bold text-slate-800">${namaMetodeHtml}</p>
+                    <p class="text-slate-500 text-[10px]">QRIS akan dibuat oleh Duitku setelah pesanan dikonfirmasi. Batas QRIS Rp 10.000.000 per transaksi.</p>
                 `;
-                btnLabel.innerText = "Buat Pesanan & Bayar via QRIS Instan";
-            } else if (namaMetode.includes('SPayLater')) {
+                btnLabel.innerText = "Buat Pesanan & Bayar via " + namaMetode;
+            } else if (['OV', 'DN', 'LA', 'SA', 'DA'].includes(kodeMetode)) {
                 infoBox.innerHTML = `
-                    <p class="font-bold text-amber-700">SPayLater & ShopeePay (Cicilan Pasti 0%)</p>
-                    <p class="text-slate-500 text-[10px]">Nikmati promo bunga 0% belanja Mall TokoKita. Bayar bulan depan atau cicilan ringan tenor 3 bulan.</p>
+                    <p class="font-bold text-sky-700">${namaMetodeHtml}</p>
+                    <p class="text-slate-500 text-[10px]">Anda akan diarahkan ke Duitku untuk menyelesaikan pembayaran melalui aplikasi atau layanan yang dipilih.</p>
                 `;
-                btnLabel.innerText = "Buat Pesanan dengan SPayLater (Bunga 0%)";
-            } else if (namaMetode.includes('DANA')) {
-                infoBox.innerHTML = `
-                    <p class="font-bold text-sky-700">DANA Dompet Digital Indonesia</p>
-                    <p class="text-slate-500 text-[10px]">Pembayaran aman dan praktis via akun saldo DANA Anda dengan proteksi garansi belanja.</p>
-                `;
-                btnLabel.innerText = "Buat Pesanan & Bayar via DANA";
-            } else if (namaMetode.includes('Saldo')) {
+                btnLabel.innerText = "Buat Pesanan & Bayar via " + namaMetode;
+            } else if (kodeMetode === 'Saldo TokoKita Pay') {
                 const cukup = saldoPelanggan >= totalAsli;
                 infoBox.innerHTML = `
                     <p class="font-bold text-emerald-800">Saldo Dompet TokoKita Pay (${formatRupiahJs(saldoPelanggan)})</p>
@@ -899,14 +917,25 @@ $jml_keranjang = count($_SESSION['keranjang']);
                     </p>
                 `;
                 btnLabel.innerText = "Buat Pesanan & Bayar Pakai Saldo TokoKita (" + formatRupiahJs(totalAsli) + ")";
-            } else if (namaMetode.includes('Virtual Account')) {
-                const noVa = '89901' + Math.floor(10000000 + Math.random() * 90000000);
+            } else if (kelompok === 'Virtual Account & Transfer Bank') {
                 infoBox.innerHTML = `
-                    <p class="font-bold text-indigo-900">Virtual Account Bank BCA & Bank BRI</p>
-                    <p class="text-slate-500 text-[10px]">No. Virtual Account: <span class="font-mono font-bold text-indigo-700">${noVa}</span> (Otomatis verifikasi 24 jam).</p>
+                    <p class="font-bold text-indigo-900">${namaMetodeHtml}</p>
+                    <p class="text-slate-500 text-[10px]">Nomor Virtual Account atau instruksi transfer resmi akan diberikan Duitku setelah pesanan dikonfirmasi.</p>
                 `;
-                btnLabel.innerText = "Buat Pesanan & Ambil No. Virtual Account";
-            } else if (namaMetode.includes('COD')) {
+                btnLabel.innerText = "Buat Pesanan & Bayar via " + namaMetode;
+            } else if (kelompok === 'Gerai') {
+                infoBox.innerHTML = `
+                    <p class="font-bold text-indigo-900">${namaMetodeHtml}</p>
+                    <p class="text-slate-500 text-[10px]">Duitku akan menampilkan kode pembayaran dan petunjuk pembayaran di gerai.</p>
+                `;
+                btnLabel.innerText = "Buat Pesanan & Bayar via " + namaMetode;
+            } else if (kelompok === 'Kartu Kredit') {
+                infoBox.innerHTML = `
+                    <p class="font-bold text-indigo-900">${namaMetodeHtml}</p>
+                    <p class="text-slate-500 text-[10px]">Anda akan diarahkan ke halaman pembayaran aman Duitku untuk menyelesaikan transaksi.</p>
+                `;
+                btnLabel.innerText = "Buat Pesanan & Bayar via " + namaMetode;
+            } else if (kodeMetode.includes('COD')) {
                 infoBox.innerHTML = `
                     <p class="font-bold text-amber-800">COD (Bayar Tunai di Tempat Saat Kurir Tiba)</p>
                     <p class="text-slate-500 text-[10px]">Barang dikirim terlebih dahulu ke alamat Anda, siapkan uang tunai pas saat kurir mengantar pesanan.</p>
@@ -915,7 +944,7 @@ $jml_keranjang = count($_SESSION['keranjang']);
             }
 
             if (window.lucide) lucide.createIcons();
-            updateNominalPembayaran();
+            updatePeringatanBatasDuitku();
         }
 
         // Update Kalkulasi Diskon Realtime
@@ -939,37 +968,31 @@ $jml_keranjang = count($_SESSION['keranjang']);
                     labelKet.classList.add('hidden');
                 }
             }
-            updateNominalPembayaran();
+            updatePeringatanBatasDuitku();
         }
 
-        function updateNominalPembayaran() {
-            const input = document.getElementById('inputNominalPembayaran');
-            const label = document.getElementById('labelNominalPembayaran');
-            if (!input || !label) return;
-
-            const selectedMethod = document.querySelector('input[name="metode_pembayaran"]:checked');
-            const isCod = selectedMethod && selectedMethod.value.includes('COD');
+        function updatePeringatanBatasDuitku() {
+            const selectedMethod = document.getElementById('selectMetodePembayaran');
             const diskon = Math.min(100, Math.max(0, parseFloat(document.getElementById('inputDiskonKeranjang').value) || 0));
             const total = Math.round(totalAsli - (totalAsli * diskon / 100));
-            const paid = parseFloat(input.value);
-            input.min = String(total);
-
-            if (!Number.isFinite(paid) || input.value === '') {
-                label.innerText = 'Masukkan nominal minimal ' + formatRupiahJs(total) + '.';
-                label.className = 'text-[10px] text-slate-500';
-            } else if (paid < total) {
-                label.innerText = 'Nominal kurang ' + formatRupiahJs(total - paid) + '.';
-                label.className = 'text-[10px] text-rose-600 font-bold';
-            } else if (isCod) {
-                label.innerText = 'Perkiraan kembalian: ' + formatRupiahJs(paid - total) + '.';
-                label.className = 'text-[10px] text-emerald-700 font-bold';
-            } else if (paid > total) {
-                label.innerText = 'Nominal memenuhi tagihan, lebih ' + formatRupiahJs(paid - total) + ' dari total.';
-                label.className = 'text-[10px] text-emerald-700 font-bold';
-            } else {
-                label.innerText = 'Nominal pembayaran memenuhi total tagihan.';
-                label.className = 'text-[10px] text-emerald-700 font-bold';
+            const pesanBatas = document.getElementById('pesanBatasDuitku');
+            const qrisSelected = selectedMethod && ['NQ', 'SP'].includes(selectedMethod.value);
+            if (pesanBatas) {
+                pesanBatas.textContent = 'Tagihan melebihi batas QRIS Rp 10.000.000. Pilih Virtual Account BCA/BRI atau kurangi jumlah belanja.';
+                pesanBatas.classList.toggle('hidden', !(qrisSelected && total > 10000000));
             }
+        }
+
+        function validasiCheckoutDuitku() {
+            const selectedMethod = document.getElementById('selectMetodePembayaran');
+            const diskon = Math.min(100, Math.max(0, parseFloat(document.getElementById('inputDiskonKeranjang').value) || 0));
+            const total = Math.round(totalAsli - (totalAsli * diskon / 100));
+            if (selectedMethod && ['NQ', 'SP'].includes(selectedMethod.value) && total > 10000000) {
+                updatePeringatanBatasDuitku();
+                document.getElementById('pesanBatasDuitku').scrollIntoView({ behavior: 'smooth', block: 'center' });
+                return false;
+            }
+            return true;
         }
 
         function kosongkanAlamatKeranjang() {
@@ -1003,7 +1026,9 @@ $jml_keranjang = count($_SESSION['keranjang']);
             });
         }
 
-        updateNominalPembayaran();
+        const metodeAwal = document.getElementById('selectMetodePembayaran');
+        if (metodeAwal) pilihMetodeBayar(metodeAwal.value);
+        updatePeringatanBatasDuitku();
     </script>
 </body>
 </html>

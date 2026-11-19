@@ -10,6 +10,8 @@ Sistem ini mengimplementasikan konsep basis data enterprise, mencakup **Database
 
 ### 1. 💳 Kasir POS & Checkout Transaksi
 - **Kasir Express 1-Klik**: Menjalankan transaksi cepat langsung memanggil Stored Procedure `sp_TambahTransaksiBaru`.
+- **Metode Pembayaran**: Kanal Duitku aktif dimuat otomatis untuk QRIS, Virtual Account, gerai, dan kartu kredit; e-wallet/PayLater disembunyikan dari checkout. Tunai dan Saldo TokoKita tetap tersedia.
+- **Riwayat Transaksi Pelanggan**: Pelanggan dapat melihat transaksi milik akunnya sendiri, status pembayaran, waktu transaksi, serta rincian barang.
 - **Multi-Keranjang Belanja**: Belanja banyak item sekaligus dengan kalkulasi diskon voucher dan ringkasan subtotal.
 - **Struk Kasir Thermal (`struk.php`)**: Desain struk thermal profesional siap cetak (`@media print` 80mm/58mm), simulasi barcode, dan rincian PPN 11% otomatis.
 
@@ -28,6 +30,7 @@ Sistem ini mengimplementasikan konsep basis data enterprise, mencakup **Database
 
 ### 4. 📦 Inventori & Manajemen Katalog Produk
 - Manajemen Kategori (`tbl_kategori`) dan Produk (`tbl_produk`).
+- Foto produk dapat diunggah saat membuat SKU; bila kosong, katalog otomatis memilih gambar berdasarkan nama produk.
 - Monitoring stok aman & penambahan stok barang.
 - Kalkulasi PPN 11% dan estimasi diskon otomatis menggunakan database function.
 
